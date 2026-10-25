@@ -1,7 +1,7 @@
-import { JUPITER_REFERRAL_CUT_BPS } from "../constants.js";
 import type { ReferralConfig } from "../config.js";
+import { JUPITER_REFERRAL_CUT_BPS, TOKEN_PROGRAM_ID } from "../constants.js";
 import { selectReferralTokenAccount } from "./referralAccounts.js";
-import { referralTokenAccountAddress } from "./referralPda.js";
+import { legacyReferralTokenAccountAddress, referralTokenAccountAddress } from "./referralPda.js";
 import type { OrderResponse } from "./types.js";
 
 export interface FeeCheck {
@@ -24,6 +24,10 @@ export interface FeeAssertionConfig {
   tokenAccounts: Record<string, string>;
   /** Mints whose configured token account was confirmed missing when the process started. */
   missingOnChain?: readonly string[];
+  /** Mint owner recorded at startup. Defaults to the classic Token program. */
+  tokenPrograms?: Readonly<Record<string, string>>;
+  /** Mints whose configured account is a legacy PDA that existed on-chain at startup. */
+  legacyMints?: readonly string[];
 }
 
 export function integratorNetBps(feeBps: number): number {
@@ -58,7 +62,7 @@ export function estimateReferralFee(
  */
 export function isUnconfiguredMintFailure(fee: FeeCheck): boolean {
   if (fee.ok || fee.skipped) return false;
-  if (fee.failures.some((failure) => failure.includes("does not match referral PDA"))) return false;
+  if (fee.failures.some((failure) => failure.includes("does not match"))) return false;
   return fee.failures.some(
     (failure) => failure.includes("no referral token account") || failure.includes("missing on-chain"),
   );
@@ -97,15 +101,20 @@ export async function evaluateOrderFees(order: OrderResponse, referral: FeeAsser
         `no referral token account configured for feeMint ${feeMint}; Jupiter would drop the integrator fee`,
       );
     } else if (referral.account) {
-      const expected = await referralTokenAccountAddress(referral.account, feeMint);
-      if (referralTokenAccount !== expected) {
-        failures.push(
-          `referral token account ${referralTokenAccount} for feeMint ${feeMint} does not match referral PDA ${expected} (seeds: referral_ata, referral account, mint). A swapped account drops the integrator fee.`,
-        );
-      } else if (referral.missingOnChain?.includes(feeMint)) {
-        failures.push(
-          `referral token account ${referralTokenAccount} for feeMint ${feeMint} was missing on-chain at startup; Jupiter would drop the integrator fee`,
-        );
+      const legacy = await legacyReferralTokenAccountAddress(referral.account, feeMint);
+      const legacyAccepted = referralTokenAccount === legacy && referral.legacyMints?.includes(feeMint) === true;
+      if (!legacyAccepted) {
+        const tokenProgram = referral.tokenPrograms?.[feeMint] ?? TOKEN_PROGRAM_ID;
+        const expected = await referralTokenAccountAddress(referral.account, feeMint, tokenProgram);
+        if (referralTokenAccount !== expected) {
+          failures.push(
+            `referral token account ${referralTokenAccount} for feeMint ${feeMint} does not match the V2 associated token account ${expected}. A swapped account drops the integrator fee.`,
+          );
+        } else if (referral.missingOnChain?.includes(feeMint)) {
+          failures.push(
+            `referral token account ${referralTokenAccount} for feeMint ${feeMint} was missing on-chain at startup; Jupiter would drop the integrator fee`,
+          );
+        }
       }
     }
   }
@@ -129,5 +138,7 @@ export function feeConfigFromReferral(referral: ReferralConfig): FeeAssertionCon
     feeBps: referral.feeBps,
     tokenAccounts: referral.tokenAccounts,
     missingOnChain: referral.missingOnChain,
+    tokenPrograms: referral.tokenPrograms,
+    legacyMints: referral.legacyMints,
   };
 }

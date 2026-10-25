@@ -1,6 +1,7 @@
 import type { AppConfig } from "./config.js";
+import { TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from "./constants.js";
 import { ConfigError } from "./errors.js";
-import { referralTokenAccountAddress } from "./jupiter/referralPda.js";
+import { legacyReferralTokenAccountAddress, resolveConfiguredReferralAccount } from "./jupiter/referralPda.js";
 import { createRuntime } from "./runtime.js";
 import type { ToolContext } from "./tools/context.js";
 import { applicableFacilitatorFees, checkX402Price, priceGuardDecision } from "./x402/priceGuard.js";
@@ -46,17 +47,28 @@ async function verifyReferralAccounts(config: AppConfig, ctx: ToolContext): Prom
   if (!referral.account) return;
   const mismatches: string[] = [];
   for (const [mint, account] of Object.entries(referral.tokenAccounts)) {
-    const expected = await referralTokenAccountAddress(referral.account, mint);
-    if (account !== expected) {
-      mismatches.push(
-        `referral token account for ${mint} is ${account}, expected PDA ${expected} (seeds referral_ata, referral account, mint)`,
-      );
+    const tokenProgram = await readMintTokenProgram(ctx, mint);
+    const legacy = await legacyReferralTokenAccountAddress(referral.account, mint);
+    const legacyExists = account === legacy ? await ctx.rpc.accountExists(account) : false;
+    const resolved = await resolveConfiguredReferralAccount({
+      referralAccount: referral.account,
+      mint,
+      configured: account,
+      tokenProgram,
+      legacyExists,
+    });
+    if (!resolved.ok) {
+      mismatches.push(resolved.message);
+      continue;
     }
-  }
-  if (mismatches.length > 0) {
-    throw new ConfigError(mismatches.join("; "));
-  }
-  for (const [mint, account] of Object.entries(referral.tokenAccounts)) {
+    referral.tokenPrograms[mint] = resolved.tokenProgram;
+    if (resolved.kind === "legacy") {
+      referral.legacyMints.push(mint);
+      process.stderr.write(
+        `advan: WARNING: referral token account for ${mint} is the legacy PDA ${account}. It exists, so it is accepted. New accounts from initializeReferralTokenAccountV2 use ${resolved.v2Address}.\n`,
+      );
+      continue;
+    }
     const exists = await ctx.rpc.accountExists(account);
     if (exists === "unknown") {
       process.stderr.write(
@@ -70,5 +82,28 @@ async function verifyReferralAccounts(config: AppConfig, ctx: ToolContext): Prom
         `advan: WARNING: referral token account ${account} for ${mint} does not exist. Orders whose feeMint is this mint are re-quoted without a referral fee (REFERRAL_MISSING_MINT_MODE=${config.referralMissingMintMode}).\n`,
       );
     }
+  }
+  if (mismatches.length > 0) throw new ConfigError(mismatches.join("; "));
+}
+
+async function readMintTokenProgram(ctx: ToolContext, mint: string): Promise<string | undefined> {
+  try {
+    const info = await ctx.rpc.getMint(mint);
+    if (!info) {
+      process.stderr.write(
+        `advan: WARNING: mint ${mint} was not found. Its referral account is accepted when it matches either token program's associated token account.\n`,
+      );
+      return undefined;
+    }
+    if (info.tokenProgram !== TOKEN_PROGRAM_ID && info.tokenProgram !== TOKEN_2022_PROGRAM_ID) {
+      throw new ConfigError(`mint ${mint} is owned by ${info.tokenProgram}, not the Token program or Token-2022`);
+    }
+    return info.tokenProgram;
+  } catch (error) {
+    if (error instanceof ConfigError) throw error;
+    process.stderr.write(
+      `advan: WARNING: could not read mint ${mint} to detect its token program. Its referral account is accepted when it matches either token program's associated token account.\n`,
+    );
+    return undefined;
   }
 }

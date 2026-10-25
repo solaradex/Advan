@@ -10,6 +10,7 @@ import type {
 } from "@x402/core/types";
 import { SOLANA_DEVNET_CAIP } from "../src/constants.js";
 import {
+  CDP_RECOVERY_INTERVAL_MS,
   FallbackFacilitatorClient,
   httpStatusFromError,
   isDefiniteNonSubmission,
@@ -36,7 +37,7 @@ class FakeFacilitator implements FacilitatorClient {
   supportedCalls = 0;
 
   constructor(
-    private readonly behavior: {
+    readonly behavior: {
       supported?: SupportedResponse | Error;
       verify?: VerifyResponse | Error;
       settle?: SettleResponse | Error;
@@ -155,6 +156,40 @@ describe("facilitator fallback policy", () => {
     await expect(stuck.settle(payload, priced("CDP_FEE"))).rejects.toThrow(/timed out/);
     expect(other.settleCalls).toBe(0);
     expect(stuck.active).toBe("cdp");
+  });
+
+  it("restores CDP on the next probe and does not postpone that probe when calls keep failing", async () => {
+    const primary = new FakeFacilitator({
+      supported: supported(SOLANA_DEVNET_CAIP, "CDP_FEE"),
+      verify: httpError(500),
+    });
+    const payai = new FakeFacilitator({ supported: supported(SOLANA_DEVNET_CAIP, "PAYAI_FEE") });
+    let refreshes = 0;
+    const client = new FallbackFacilitatorClient(primary, payai, SOLANA_DEVNET_CAIP, undefined, async () => {
+      refreshes += 1;
+    });
+    await client.getSupported();
+    const supportedBefore = primary.supportedCalls;
+    await expect(client.verify(payload, priced("CDP_FEE"))).rejects.toThrow(/500/);
+    expect(client.health()).toMatchObject({ active: "payai", cdp: "down" });
+    const due = client.nextCdpProbeAt ?? 0;
+    expect(due).toBeGreaterThan(Date.now());
+    await expect(client.verify(payload, priced("CDP_FEE"))).rejects.toThrow(/500/);
+    expect(client.nextCdpProbeAt).toBe(due);
+    expect(await client.probeRecovery(due - 1)).toBe("skipped");
+    expect(primary.supportedCalls).toBe(supportedBefore);
+
+    primary.behavior.supported = httpError(503);
+    expect(await client.probeRecovery(due)).toBe("still_down");
+    expect(client.active).toBe("payai");
+    expect(client.nextCdpProbeAt).toBe(due + CDP_RECOVERY_INTERVAL_MS);
+
+    primary.behavior.supported = supported(SOLANA_DEVNET_CAIP, "CDP_FEE");
+    expect(await client.probeRecovery(due + CDP_RECOVERY_INTERVAL_MS)).toBe("restored");
+    expect(client.health()).toMatchObject({ active: "cdp", cdp: "primary", cdpNextProbeAt: null });
+    expect(refreshes).toBe(2);
+    const rebuilt = await client.getSupported();
+    expect(rebuilt.kinds[0]?.extra).toMatchObject({ feePayer: "CDP_FEE" });
   });
 
   it("falls back when CDP does not advertise exact v2 for the network", async () => {

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { WSOL_MINT, USDC_MAINNET_MINT } from "../src/constants.js";
-import { bpsOfAmount, evaluateOrderFees, integratorNetBps } from "../src/jupiter/fees.js";
-import { referralTokenAccountAddress } from "../src/jupiter/referralPda.js";
+import { bpsOfAmount, evaluateOrderFees, integratorNetBps, isUnconfiguredMintFailure } from "../src/jupiter/fees.js";
+import { legacyReferralTokenAccountAddress, referralTokenAccountAddress } from "../src/jupiter/referralPda.js";
 import { orderResponse, REFERRAL, REFERRAL_TOKEN_ACCOUNT } from "./helpers.js";
 
 const referral = {
@@ -58,14 +58,34 @@ describe("fee assertion", () => {
   });
 
   it("rejects a referral token account that belongs to a different mint", async () => {
-    const usdcPda = await referralTokenAccountAddress(REFERRAL, USDC_MAINNET_MINT);
+    const usdcAta = await referralTokenAccountAddress(REFERRAL, USDC_MAINNET_MINT);
     const swapped = await evaluateOrderFees(orderResponse(), {
       account: REFERRAL,
       feeBps: 50,
-      tokenAccounts: { [WSOL_MINT]: usdcPda },
+      tokenAccounts: { [WSOL_MINT]: usdcAta },
     });
     expect(swapped.ok).toBe(false);
-    expect(swapped.failures.join(" ")).toMatch(/does not match referral PDA/);
-    expect(usdcPda).not.toBe(REFERRAL_TOKEN_ACCOUNT);
+    expect(swapped.failures.join(" ")).toMatch(/does not match the V2 associated token account/);
+    expect(isUnconfiguredMintFailure(swapped)).toBe(false);
+    expect(usdcAta).not.toBe(REFERRAL_TOKEN_ACCOUNT);
+  });
+
+  it("accepts a legacy PDA only after startup has seen it on-chain", async () => {
+    const legacy = await legacyReferralTokenAccountAddress(REFERRAL, WSOL_MINT);
+    const hidden = await evaluateOrderFees(orderResponse(), {
+      account: REFERRAL,
+      feeBps: 50,
+      tokenAccounts: { [WSOL_MINT]: legacy },
+    });
+    expect(hidden.ok).toBe(false);
+    expect(isUnconfiguredMintFailure(hidden)).toBe(false);
+    const accepted = await evaluateOrderFees(orderResponse(), {
+      account: REFERRAL,
+      feeBps: 50,
+      tokenAccounts: { [WSOL_MINT]: legacy },
+      legacyMints: [WSOL_MINT],
+    });
+    expect(accepted.ok).toBe(true);
+    expect(accepted.referralTokenAccount).toBe(legacy);
   });
 });

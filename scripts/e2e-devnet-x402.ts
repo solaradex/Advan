@@ -19,7 +19,7 @@ import { createKeyPairSignerFromBytes } from "@solana/kit";
 import { wrapFetchWithPayment, x402Client } from "@x402/fetch";
 import { ExactSvmScheme } from "@x402/svm/exact/client";
 import { decodePaymentResponseHeader } from "@x402/fetch";
-import { SOLANA_DEVNET_CAIP, USDC_MAINNET_MINT } from "../src/constants.js";
+import { SOLANA_DEVNET_CAIP, usdcMintForNetwork } from "../src/constants.js";
 
 const keypairPath = process.env.SOLANA_KEYPAIR_PATH;
 const baseUrl = process.env.ADVAN_HTTP_URL || "http://127.0.0.1:8787";
@@ -37,7 +37,7 @@ const client = new x402Client().register(
   new ExactSvmScheme(signer, { rpcUrl }),
 );
 const payFetch = wrapFetchWithPayment(fetch, client);
-const mint = process.env.E2E_MINT || USDC_MAINNET_MINT;
+const mint = process.env.E2E_MINT || usdcMintForNetwork(network);
 const owner = signer.address;
 
 const risk = await pay(`${baseUrl}/v1/token_risk`, { mint });

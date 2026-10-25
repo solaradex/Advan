@@ -123,7 +123,7 @@ describe("swap tools", () => {
     expect(log.events.some((event) => event.kind === "referral_requote")).toBe(true);
   });
 
-  it("does not re-quote when the configured account is the wrong PDA", async () => {
+  it("does not re-quote when the configured account is a swapped mint", async () => {
     const jupiter = new FakeJupiter(orderResponse());
     const swapped = testConfig({ JUPITER_REFERRAL_TOKEN_ACCOUNT_SOL: USDC_MAINNET_MINT });
     await expect(getQuote(quoteInput, toolContext(swapped, jupiter))).rejects.toBeInstanceOf(FeeCheckError);

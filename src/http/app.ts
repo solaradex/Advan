@@ -3,7 +3,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { paymentMiddleware } from "@x402/express";
 import type { Express, NextFunction, Request, Response } from "express";
 import type { Network } from "@x402/core/types";
-import { decodePaymentRequiredHeader } from "@x402/core/http";
+import { redactPaymentRequired } from "./paymentError.js";
 import { AdvanError, PaymentsUnconfiguredError, toAdvanError } from "../errors.js";
 import { readUsageEvents, summarizeUsage } from "../stats.js";
 import { buildSwapTx } from "../tools/buildSwap.js";
@@ -41,13 +41,13 @@ export function createApp(options: AppOptions): Express {
     const originalJson = res.json.bind(res);
     res.json = ((body?: unknown) => {
       if (res.statusCode !== 402) return originalJson(body);
-      const reason = facilitatorReason(res.getHeader("PAYMENT-REQUIRED"));
-      if (!reason || reason === "Payment required") return originalJson(body);
+      const redacted = redactPaymentRequired(res.getHeader("PAYMENT-REQUIRED"));
+      if (redacted.header) res.setHeader("PAYMENT-REQUIRED", redacted.header);
+      if (!redacted.reason || redacted.reason === "Payment required") return originalJson(body);
       const base = body && typeof body === "object" ? (body as Record<string, unknown>) : {};
       return originalJson({
         ...base,
-        error: reason,
-        facilitatorReason: reason,
+        error: redacted.reason,
         code: typeof base.code === "string" ? base.code : "payment_required",
       });
     }) as typeof res.json;
@@ -126,6 +126,7 @@ export function createApp(options: AppOptions): Express {
   });
 
   app.get("/health", (_req, res) => {
+    const facilitator = x402?.facilitator.health();
     res.json({
       status: "ok",
       service: SERVICE_NAME,
@@ -136,7 +137,9 @@ export function createApp(options: AppOptions): Express {
         referralFeeBps: ctx.config.referral.feeBps,
         feeCheckMode: ctx.config.feeCheckMode,
         x402Configured: Boolean(x402),
-        facilitator: x402?.facilitator.active ?? "none",
+        facilitator: facilitator?.active ?? "none",
+        cdp: facilitator?.cdp ?? "unconfigured",
+        cdpNextProbeAt: facilitator?.cdpNextProbeAt ?? null,
         x402Network: ctx.config.x402.network,
         x402PriceUsd: ctx.config.x402.priceUsd,
         dataRpc: rpcOrigin(ctx.config.solanaRpcUrl),
@@ -207,16 +210,6 @@ export function createApp(options: AppOptions): Express {
   });
 
   return app;
-}
-
-function facilitatorReason(header: string | number | string[] | undefined): string | undefined {
-  const value = Array.isArray(header) ? header[0] : header;
-  if (typeof value !== "string" || value.length === 0) return undefined;
-  try {
-    return decodePaymentRequiredHeader(value).error;
-  } catch {
-    return undefined;
-  }
 }
 
 function rpcOrigin(url: string): string {

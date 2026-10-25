@@ -52,6 +52,10 @@ export interface ReferralConfig {
   required: boolean;
   /** Filled at startup after the on-chain existence check. Empty until then. */
   missingOnChain: string[];
+  /** Mint → token program used for the V2 ATA. Filled at startup. */
+  tokenPrograms: Record<string, string>;
+  /** Mints whose configured account is a legacy PDA that existed at startup. */
+  legacyMints: string[];
 }
 
 export interface AppConfig {
@@ -299,6 +303,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       tokenAccounts,
       required: referralRequired,
       missingOnChain: [],
+      tokenPrograms: {},
+      legacyMints: [],
     },
     feeCheckMode: feeCheckRaw,
     referralMissingMintMode: missingMintRaw,

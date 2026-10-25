@@ -13,10 +13,17 @@ export interface JupiterClientOptions {
   apiKey?: string;
   timeoutMs: number;
   fetchImpl?: typeof fetch;
+  /** Test hook. Production waits with setTimeout. */
+  sleep?: (ms: number) => Promise<void>;
 }
+
+const JUPITER_429_ATTEMPTS = 4;
+const JUPITER_429_BASE_DELAY_MS = 250;
+const JUPITER_429_MAX_DELAY_MS = 8_000;
 
 export function createJupiterClient(options: JupiterClientOptions): JupiterClient {
   const fetchImpl = options.fetchImpl ?? fetch;
+  const sleep = options.sleep ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
   const headers: Record<string, string> = { accept: "application/json" };
   if (options.apiKey) headers["x-api-key"] = options.apiKey;
 
@@ -33,12 +40,7 @@ export function createJupiterClient(options: JupiterClientOptions): JupiterClien
       if (params.referralFee != null) query.set("referralFee", String(params.referralFee));
       if (params.excludeRouters) query.set("excludeRouters", params.excludeRouters);
       if (params.receiver) query.set("receiver", params.receiver);
-      const body = await getJson(
-        fetchImpl,
-        `${options.baseUrl}/swap/v2/order?${query.toString()}`,
-        { headers },
-        options.timeoutMs,
-      );
+      const body = await getJson(fetchImpl, sleep, `${options.baseUrl}/swap/v2/order?${query.toString()}`, { headers }, options.timeoutMs);
       return parseOrder(body);
     },
     async searchToken(mint) {
@@ -50,6 +52,7 @@ export function createJupiterClient(options: JupiterClientOptions): JupiterClien
       if (unique.length === 0) return [];
       const body = await getJson(
         fetchImpl,
+        sleep,
         `${options.baseUrl}/tokens/v2/search?query=${unique.map(encodeURIComponent).join(",")}`,
         { headers },
         options.timeoutMs,
@@ -64,6 +67,7 @@ export function createJupiterClient(options: JupiterClientOptions): JupiterClien
         const batch = unique.slice(index, index + 50);
         const body = await getJson(
           fetchImpl,
+          sleep,
           `${options.baseUrl}/price/v3?ids=${batch.map(encodeURIComponent).join(",")}`,
           { headers },
           options.timeoutMs,
@@ -164,24 +168,43 @@ function parseToken(row: Record<string, unknown>): TokenInfo {
   };
 }
 
-async function getJson(fetchImpl: typeof fetch, url: string, init: RequestInit, timeoutMs: number): Promise<unknown> {
-  let response: Response;
-  try {
-    response = await fetchImpl(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
-  } catch (error) {
-    throw new UpstreamError(`Jupiter request failed: ${(error as Error).message}`);
+async function getJson(
+  fetchImpl: typeof fetch,
+  sleep: (ms: number) => Promise<void>,
+  url: string,
+  init: RequestInit,
+  timeoutMs: number,
+): Promise<unknown> {
+  for (let attempt = 0; attempt < JUPITER_429_ATTEMPTS; attempt++) {
+    let response: Response;
+    try {
+      response = await fetchImpl(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+    } catch (error) {
+      throw new UpstreamError(`Jupiter request failed: ${(error as Error).message}`);
+    }
+    const text = await response.text();
+    let body: unknown = text;
+    try {
+      body = text ? JSON.parse(text) : null;
+    } catch {
+      body = text;
+    }
+    if (response.ok) return body;
+    const retry = response.status === 429 && attempt < JUPITER_429_ATTEMPTS - 1;
+    if (!retry) throw new UpstreamError(`Jupiter HTTP ${response.status}`, { url, body });
+    const delay = retryDelayMs(response, attempt);
+    process.stderr.write(`advan: Jupiter HTTP 429, retrying in ${delay}ms (${attempt + 1}/${JUPITER_429_ATTEMPTS - 1})\n`);
+    await sleep(delay);
   }
-  const text = await response.text();
-  let body: unknown = text;
-  try {
-    body = text ? JSON.parse(text) : null;
-  } catch {
-    body = text;
+  throw new UpstreamError("Jupiter HTTP 429", { url });
+}
+
+function retryDelayMs(response: Response, attempt: number): number {
+  const header = response.headers.get("retry-after");
+  if (header && /^\d+(\.\d+)?$/.test(header.trim())) {
+    return Math.min(Math.round(Number(header) * 1000), JUPITER_429_MAX_DELAY_MS);
   }
-  if (!response.ok) {
-    throw new UpstreamError(`Jupiter HTTP ${response.status}`, { url, body });
-  }
-  return body;
+  return Math.min(JUPITER_429_BASE_DELAY_MS * 2 ** attempt, JUPITER_429_MAX_DELAY_MS);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -11,11 +11,13 @@ export const USDC_DEVNET_MINT = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU";
 
 export const TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 export const TOKEN_2022_PROGRAM_ID = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
+/** Associated Token Account program. V2 referral token accounts are ATAs of the referral account. */
+export const ASSOCIATED_TOKEN_PROGRAM_ID = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
 
 /** Jupiter Ultra / Swap referral project. From the referral program docs. */
 export const JUPITER_REFERRAL_PROJECT = "DkiqsTrw1u1bYFumumC7sCG2S8K25qc2vemJFHyW2wJc";
 
-/** Referral program that owns `referral_ata` PDAs. From `@jup-ag/referral-sdk`. */
+/** Referral program. Legacy token accounts are PDAs of this program; V2 accounts are ATAs. */
 export const JUPITER_REFERRAL_PROGRAM = "REFER4ZgmyYx9c6He5XfaTMiGfdLwRnkV4RPp9t9iF3";
 
 export const SOLANA_MAINNET_RPC = "https://api.mainnet-beta.solana.com";
@@ -26,6 +28,15 @@ export const DEFAULT_MAX_TRADE_USD = 1000;
 
 export const SOLANA_MAINNET_CAIP = "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp";
 export const SOLANA_DEVNET_CAIP = "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1";
+
+/**
+ * USDC mint the e2e payer should use for a network string.
+ * Devnet (including the script's default CAIP id) uses Circle's faucet mint.
+ */
+export function usdcMintForNetwork(network: string): string {
+  if (network === "devnet" || network === "solana-devnet" || network === SOLANA_DEVNET_CAIP) return USDC_DEVNET_MINT;
+  return USDC_MAINNET_MINT;
+}
 
 export const REFERRAL_FEE_MIN_BPS = 50;
 export const REFERRAL_FEE_MAX_BPS = 255;

@@ -15,7 +15,7 @@ Package name: `advan-mcp` (unregistered on npm when this tree was created on 202
 | `token_risk` | `X402_PRICE_USD` (default $0.01) | RPC mint/freeze authority, Jupiter Tokens V2, RugCheck summary, scored. |
 | `wallet_portfolio` | same | `getBalance` + `getTokenAccountsByOwner` (Token and Token-2022), Jupiter Price V3. |
 
-Jupiter base URL is `https://api.jup.ag` (Swap API V2). `lite-api.jup.ag` is not used. An optional `JUPITER_API_KEY` is sent as `x-api-key`. Keyless access is 0.5 RPS.
+Jupiter base URL is `https://api.jup.ag` (Swap API V2). `lite-api.jup.ag` is not used. An optional `JUPITER_API_KEY` is sent as `x-api-key`. Keyless access is about 0.5 requests per second; Jupiter returns HTTP 429 past that, and Advan retries those responses with backoff (up to three waits). Set `JUPITER_API_KEY` for production. A portal key is the limit you should run with once more than one agent is calling.
 
 ## Fees you should expect
 
@@ -26,8 +26,8 @@ Jupiter picks the fee mint (SOL, then stables, then LSTs, then other tokens). If
 - `referralAccount` matches the configured account
 - `feeBps` equals the configured fee when `gasless` is false
 - `feeBps` is at least the configured fee when `gasless` is true (gasless cost can add bps)
-- `feeMint` has a configured referral token account, and that account is the PDA derived from seeds `referral_ata`, the referral account, and the mint (`REFER4ZgmyYx9c6He5XfaTMiGfdLwRnkV4RPp9t9iF3`). A swapped account fails the check.
-- At startup Advan checks that each configured referral token account exists on `SOLANA_RPC_URL`. A missing account is recorded. A PDA mismatch refuses to boot.
+- `feeMint` has a configured referral token account, and that account is the V2 associated token account of the referral account for the mint (`allowOwnerOffCurve`, under the mint's token program, Token or Token-2022). That is what `initializeReferralTokenAccountV2` creates. A swapped account fails the check. A legacy `referral_ata` PDA is accepted only when that account already exists on-chain.
+- At startup Advan checks that each configured referral token account exists on `SOLANA_RPC_URL`. A missing V2 account is recorded. A wrong account, or a legacy PDA that does not exist, refuses to boot.
 
 `FEE_CHECK_MODE=fail` (default) withholds the quote and the transaction when the fee itself is wrong. `warn` returns them with `feeCheck.ok: false` and logs a `fee_check_failure` event either way.
 
@@ -39,7 +39,7 @@ Leave the account unset and orders are sent with no referral (a startup warning 
 
 `@x402/evm` is a dependency because `@coinbase/cdp-sdk/x402` loads it. Advan registers only the Solana exact scheme.
 
-Coinbase CDP is the primary facilitator when `CDP_API_KEY_ID` and `CDP_API_KEY_SECRET` are set. PayAI (`https://facilitator.payai.network`) is used when the CDP `/supported` probe fails, and it is the only facilitator when CDP keys are absent. Verify and settle are sent to the facilitator whose advertised `extra.feePayer` is on the payment requirements. An in-flight payment is not handed to the other facilitator: that fee payer would not match, and the settlement would fail. When CDP fails in a way that is safe to fail over, Advan marks it down and the next payment challenge is rebuilt with PayAI's fee payer. A settle timeout or HTTP 5xx is not treated as a failover. Failed verifications are logged as `x402_verification` and the facilitator's reason is returned on the 402 (`PAYMENT-REQUIRED` `error`, and `facilitatorReason` in the JSON body).
+Coinbase CDP is the primary facilitator when `CDP_API_KEY_ID` and `CDP_API_KEY_SECRET` are set. PayAI (`https://facilitator.payai.network`) is used when the CDP `/supported` probe fails, and it is the only facilitator when CDP keys are absent. Verify and settle are sent to the facilitator whose advertised `extra.feePayer` is on the payment requirements. An in-flight payment is not handed to the other facilitator: that fee payer would not match, and the settlement would fail. When CDP fails in a way that is safe to fail over, Advan marks it down and the next payment challenge is rebuilt with PayAI's fee payer. Every 5 minutes Advan asks CDP `/supported` again and, when that succeeds, restores CDP as the primary so later challenges use CDP's fee payer. `GET /health` reports `cdp` as `primary`, `down`, or `unconfigured`, and `cdpNextProbeAt` while it is down. A settle timeout or HTTP 5xx is not treated as a failover. Failed verifications are logged as `x402_verification` with the facilitator's reason. The 402 body and `PAYMENT-REQUIRED` error shown to the client say `payment could not be verified`.
 
 MCP payment requirements, including the Solana blockhash, are built on every paid call. HTTP builds them per request. Both use `X402_RPC_URL`, which defaults from `X402_NETWORK` and is never `SOLANA_RPC_URL`.
 
@@ -197,7 +197,7 @@ npm run setup:payto-ata
 ```
 
 4. Start the HTTP server with `X402_PAY_TO` and `X402_NETWORK` (devnet). Leave `SOLANA_RPC_URL` on mainnet if `token_risk` should read mainnet mints. Set `X402_RPC_URL` only when the public devnet RPC is not the one you want; when it is unset Advan derives `https://api.devnet.solana.com` from the devnet CAIP id. Do not point `X402_RPC_URL` at mainnet. Use CDP keys or leave them unset (PayAI, free on devnet). `X402_PRICE_USD` can be `0.01` or `0.005`.
-5. Pay from the buyer keypair. `X402_CLIENT_RPC_URL` is the buyer's RPC for the USDC transfer. The public devnet RPC is often unreachable, so set one you can use. The script pays for `token_risk` and `wallet_portfolio`.
+5. Pay from the buyer keypair. `X402_CLIENT_RPC_URL` is the buyer's RPC for the USDC transfer. The public devnet RPC is often unreachable, so set one you can use. The script pays for `token_risk` and `wallet_portfolio`. `E2E_MINT` defaults to devnet USDC (`4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU`) when `X402_NETWORK` is devnet, and to mainnet USDC otherwise.
 
 ```bash
 SOLANA_KEYPAIR_PATH=./devnet-payer.json \

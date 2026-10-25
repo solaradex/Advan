@@ -129,6 +129,7 @@ export async function setupX402(config: AppConfig, log: UsageLogger): Promise<X4
     process.stderr.write(`x402 facilitator initialize failed: ${message}\n`);
     return null;
   }
+  facilitator.startRecoveryProbe();
   const buildAccepts = () =>
     resourceServer.buildPaymentRequirements({
       scheme: "exact",

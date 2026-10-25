@@ -3,7 +3,7 @@ import { httpDiscovery, DISCOVERY_EXAMPLES } from "../src/x402/setup.js";
 import { quoteSchema, swapSchema, tokenRiskSchema, portfolioSchema } from "../src/tools/schemas.js";
 import { ConfigError } from "../src/errors.js";
 import { loadConfig } from "../src/config.js";
-import { WSOL_MINT, USDC_MAINNET_MINT } from "../src/constants.js";
+import { SOLANA_DEVNET_CAIP, SOLANA_MAINNET_CAIP, USDC_DEVNET_MINT, USDC_MAINNET_MINT, WSOL_MINT, usdcMintForNetwork } from "../src/constants.js";
 
 describe("tool input validation", () => {
   it("rejects malformed quote and swap inputs", () => {
@@ -36,6 +36,9 @@ describe("tool input validation", () => {
     expect(config.x402.rpcUrl).toBe("https://api.devnet.solana.com");
     expect(config.solanaRpcUrl).toBe("https://api.mainnet-beta.solana.com");
     expect(config.x402.rpcUrl).not.toBe(config.solanaRpcUrl);
+    expect(usdcMintForNetwork(SOLANA_DEVNET_CAIP)).toBe(USDC_DEVNET_MINT);
+    expect(usdcMintForNetwork("devnet")).toBe(USDC_DEVNET_MINT);
+    expect(usdcMintForNetwork(SOLANA_MAINNET_CAIP)).toBe(USDC_MAINNET_MINT);
     expect(loadConfig({ X402_NETWORK: "mainnet", X402_RPC_URL: "https://rpc.example" }).x402.rpcUrl).toBe(
       "https://rpc.example",
     );

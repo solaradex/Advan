@@ -75,25 +75,78 @@ export function supportsExactV2(supported: SupportedResponse, network: string): 
   return supported.kinds.some((kind) => kind.scheme === "exact" && kind.network === network && kind.x402Version === 2);
 }
 
+/** How often a down CDP facilitator is probed. A late tick still falls inside 10 minutes. */
+export const CDP_RECOVERY_INTERVAL_MS = 5 * 60 * 1000;
+
+export interface FacilitatorHealth {
+  active: FacilitatorName;
+  cdp: "unconfigured" | "primary" | "down";
+  cdpNextProbeAt: string | null;
+}
+
 export class FallbackFacilitatorClient implements FacilitatorClient {
   lastFacilitator: FacilitatorName | "none" = "none";
   /** Facilitator whose `/supported` payload was returned. New payment requirements use that fee payer. */
   active: FacilitatorName = "cdp";
   private readonly feePayers = new Map<FacilitatorName, string>();
   private readonly down = new Set<FacilitatorName>();
+  private cdpNextProbeAtMs?: number;
+  private recoveryTimer?: ReturnType<typeof setInterval>;
+  private recoveryInFlight?: Promise<"skipped" | "still_down" | "restored">;
 
   constructor(
     private readonly primary: FacilitatorClient | null,
     private readonly fallback: FacilitatorClient,
     private readonly network: string,
     private readonly onFailover?: (event: FailoverEvent) => void,
-    /** Called after `active` moves to the other facilitator so requirements can be rebuilt. */
+    /** Called after `active` moves so the next payment challenge uses that facilitator. */
     private readonly onActiveChange?: () => Promise<void>,
+    private readonly recoveryIntervalMs = CDP_RECOVERY_INTERVAL_MS,
   ) {
     if (!primary) this.active = "payai";
   }
 
+  /** Milliseconds when the next CDP probe is allowed. Undefined while CDP is primary. */
+  get nextCdpProbeAt(): number | undefined {
+    return this.cdpNextProbeAtMs;
+  }
+
+  health(): FacilitatorHealth {
+    if (!this.primary) return { active: this.active, cdp: "unconfigured", cdpNextProbeAt: null };
+    if (this.down.has("cdp")) {
+      return {
+        active: this.active,
+        cdp: "down",
+        cdpNextProbeAt: this.cdpNextProbeAtMs == null ? null : new Date(this.cdpNextProbeAtMs).toISOString(),
+      };
+    }
+    return { active: this.active, cdp: "primary", cdpNextProbeAt: null };
+  }
+
+  /** Probe CDP on a timer. No-op until CDP has been marked down. Does not keep the process alive. */
+  startRecoveryProbe(): void {
+    if (!this.primary || this.recoveryTimer) return;
+    this.recoveryTimer = setInterval(() => {
+      void this.probeRecovery();
+    }, this.recoveryIntervalMs);
+    this.recoveryTimer.unref?.();
+  }
+
+  /**
+   * Ask CDP `/supported` once the recovery interval has elapsed. A healthy answer
+   * makes CDP primary again and rebuilds the next payment challenge.
+   */
+  probeRecovery(now = Date.now()): Promise<"skipped" | "still_down" | "restored"> {
+    if (this.recoveryInFlight) return this.recoveryInFlight;
+    const run = this.probeRecoveryOnce(now).finally(() => {
+      this.recoveryInFlight = undefined;
+    });
+    this.recoveryInFlight = run;
+    return run;
+  }
+
   async getSupported(): Promise<SupportedResponse> {
+    await this.probeRecovery();
     if (this.primary && this.active === "cdp" && !this.down.has("cdp")) {
       try {
         const supported = await this.primary.getSupported();
@@ -105,11 +158,11 @@ export class FallbackFacilitatorClient implements FacilitatorClient {
           return supported;
         }
         this.note("supported", "cdp omitted exact v2 for the configured network");
-        this.down.add("cdp");
+        this.markCdpDown();
       } catch (error) {
         if (!shouldFailover("supported", error)) throw error;
         this.note("supported", errorText(error));
-        this.down.add("cdp");
+        this.markCdpDown();
       }
     }
     this.active = "payai";
@@ -144,7 +197,7 @@ export class FallbackFacilitatorClient implements FacilitatorClient {
     } catch (error) {
       if (name === "cdp" && this.primary && shouldFailover(operation, error)) {
         this.note(operation, errorText(error));
-        this.down.add("cdp");
+        this.markCdpDown();
         if (this.active === "cdp") {
           this.active = "payai";
           try {
@@ -206,6 +259,51 @@ export class FallbackFacilitatorClient implements FacilitatorClient {
 
   private note(operation: FacilitatorOperation, error: string): void {
     this.onFailover?.({ operation, from: "cdp", error });
+  }
+
+  /** The first failure schedules the probe. Later failures do not push it back. */
+  private markCdpDown(now = Date.now()): void {
+    if (!this.down.has("cdp")) this.cdpNextProbeAtMs = now + this.recoveryIntervalMs;
+    this.down.add("cdp");
+  }
+
+  private async probeRecoveryOnce(now: number): Promise<"skipped" | "still_down" | "restored"> {
+    if (!this.primary || !this.down.has("cdp")) return "skipped";
+    if (this.cdpNextProbeAtMs != null && now < this.cdpNextProbeAtMs) return "skipped";
+    try {
+      const supported = await this.primary.getSupported();
+      if (!supportsExactV2(supported, this.network)) {
+        this.cdpNextProbeAtMs = now + this.recoveryIntervalMs;
+        process.stderr.write(
+          `advan: CDP facilitator still does not list exact v2; next probe ${new Date(this.cdpNextProbeAtMs).toISOString()}\n`,
+        );
+        return "still_down";
+      }
+      this.down.delete("cdp");
+      this.remember("cdp", supported);
+      this.cdpNextProbeAtMs = undefined;
+      const changed = this.active !== "cdp";
+      this.active = "cdp";
+      this.lastFacilitator = "cdp";
+      if (changed) await this.refreshActive();
+      process.stderr.write("advan: CDP facilitator is healthy again; new payment challenges use CDP\n");
+      return "restored";
+    } catch (error) {
+      this.cdpNextProbeAtMs = now + this.recoveryIntervalMs;
+      process.stderr.write(
+        `advan: CDP facilitator still unavailable (${errorText(error)}); next probe ${new Date(this.cdpNextProbeAtMs).toISOString()}\n`,
+      );
+      return "still_down";
+    }
+  }
+
+  private async refreshActive(): Promise<void> {
+    try {
+      await this.onActiveChange?.();
+    } catch (hookError) {
+      const message = hookError instanceof Error ? hookError.message : "refresh failed";
+      process.stderr.write(`advan: facilitator refresh failed: ${message}\n`);
+    }
   }
 }
 
