@@ -1,0 +1,17 @@
+node_modules/
+dist/
+coverage/
+logs/
+*.log
+.env
+.env.*
+!.env.example
+*.keypair
+*.keypair.json
+keypair.json
+id.json
+*-keypair.json
+devnet-payer.json
+*.pem
+.DS_Store
+*.tsbuildinfo

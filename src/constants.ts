@@ -1,0 +1,45 @@
+/** Wrapped SOL. Same mint on mainnet and devnet. Fees labeled "SOL" settle here. */
+export const WSOL_MINT = "So11111111111111111111111111111111111111112";
+
+/** Mainnet USDC. Jupiter referral fees in USDC use this mint, not the devnet faucet mint. */
+export const USDC_MAINNET_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+
+export const USDT_MAINNET_MINT = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB";
+
+/** Circle devnet USDC used by x402 exact payments. */
+export const USDC_DEVNET_MINT = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU";
+
+export const TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
+export const TOKEN_2022_PROGRAM_ID = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
+
+/** Jupiter Ultra / Swap referral project. From the referral program docs. */
+export const JUPITER_REFERRAL_PROJECT = "DkiqsTrw1u1bYFumumC7sCG2S8K25qc2vemJFHyW2wJc";
+
+export const SOLANA_MAINNET_CAIP = "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp";
+export const SOLANA_DEVNET_CAIP = "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1";
+
+export const REFERRAL_FEE_MIN_BPS = 50;
+export const REFERRAL_FEE_MAX_BPS = 255;
+export const DEFAULT_REFERRAL_FEE_BPS = 50;
+
+/** Jupiter keeps 20% of the referral fee. 50 bps charged => 40 bps to the partner. */
+export const JUPITER_REFERRAL_CUT_BPS = 2000;
+
+export const DEFAULT_X402_PRICE_USD = 0.01;
+export const CDP_SETTLEMENT_FEE_USD = 0.001;
+/** PayAI Solana mainnet `exact`, live rate effective 2026-10-15. Devnet settlements are free. */
+export const PAYAI_MAINNET_EXACT_FEE_USD = 0.00133;
+export const PAYAI_DEVNET_EXACT_FEE_USD = 0;
+export const DEFAULT_FEE_MULTIPLE = 5;
+
+export const JUPITER_EXECUTE_URL = "https://api.jup.ag/swap/v2/execute";
+
+export const RISKY_TOKEN_2022_EXTENSIONS = [
+  "transferFeeConfig",
+  "permanentDelegate",
+  "transferHook",
+  "nonTransferable",
+  "defaultAccountState",
+] as const;
+
+export const PUBKEY_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;

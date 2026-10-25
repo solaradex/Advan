@@ -1,1 +1,231 @@
 # Advan
+
+Advan is an open-source [MCP](https://modelcontextprotocol.io) server and HTTP API that gives AI agents Solana trading tools. Quotes and unsigned swap transactions come from Jupiter Swap API V2. Token risk and wallet portfolio reads are paid with [x402](https://www.x402.org) (exact scheme, USDC).
+
+The server is non-custodial. It never signs a transaction and it never loads a trading key. `build_swap_tx` returns an unsigned base64 transaction for the user's own wallet (`taker`) to sign. `SOLANA_KEYPAIR_PATH` is read only by `scripts/e2e-devnet-x402.ts`.
+
+Package name: `advan-mcp` (unregistered on npm when this tree was created on 2026-10-25). Change the `"name"` field in `package.json` before publishing. The `advan-mcp` bin name can stay.
+
+## What you can call
+
+| Tool | Price | What it does |
+|---|---|---|
+| `get_quote` | Free | Jupiter `GET /swap/v2/order` without `taker`. Quote only. |
+| `build_swap_tx` | Free | Same endpoint with `taker`. Unsigned transaction plus a submit hint. |
+| `token_risk` | `X402_PRICE_USD` (default $0.01) | RPC mint/freeze authority, Jupiter Tokens V2, RugCheck summary, scored. |
+| `wallet_portfolio` | same | `getBalance` + `getTokenAccountsByOwner` (Token and Token-2022), Jupiter Price V3. |
+
+Jupiter base URL is `https://api.jup.ag` (Swap API V2). `lite-api.jup.ag` is not used. An optional `JUPITER_API_KEY` is sent as `x-api-key`. Keyless access is 0.5 RPS.
+
+## Fees you should expect
+
+**Jupiter referral.** When `JUPITER_REFERRAL_ACCOUNT` is set, every order sends `referralAccount` and `referralFee`. The allowed range is **50–255 bps** (default **50**). Jupiter keeps 20% of that fee, so 50 bps charged to the user nets **40 bps** to the referral partner, and it replaces Jupiter's usual 2–10 bps platform fee. Quotes will look more expensive than calling Jupiter with no referral.
+
+Jupiter picks the fee mint (SOL, then stables, then LSTs, then other tokens). If the referral token account for that mint does not exist, the swap still succeeds and **your fee is dropped**. Advan checks every order response:
+
+- `referralAccount` matches the configured account
+- `feeBps` equals the configured fee when `gasless` is false
+- `feeBps` is at least the configured fee when `gasless` is true (gasless cost can add bps)
+- `feeMint` has a configured referral token account
+
+`FEE_CHECK_MODE=fail` (default) withholds the quote and the transaction. `warn` returns them with `feeCheck.ok: false` and logs a `fee_check_failure` event either way. Leave the account unset and orders are sent with no referral (a startup warning says so). `JUPITER_REFERRAL_REQUIRED=true` refuses to boot without the account and wSOL, USDC, and USDT token accounts.
+
+**x402.** `token_risk` and `wallet_portfolio` use the exact scheme. The buyer pays USDC to `X402_PAY_TO` on `X402_NETWORK`. Default network is Solana devnet (`solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1`) and devnet USDC `4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU`. Mainnet is `solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp` and USDC `EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v`. The recipient USDC token account must already exist (`npm run setup:payto-ata`).
+
+`@x402/evm` is a dependency because `@coinbase/cdp-sdk/x402` loads it. Advan registers only the Solana exact scheme.
+
+Coinbase CDP is the primary facilitator when `CDP_API_KEY_ID` and `CDP_API_KEY_SECRET` are set. PayAI (`https://facilitator.payai.network`) is used when the CDP probe fails, and it is the only facilitator when CDP keys are absent. A settle that might already have been submitted (timeout or HTTP 5xx) is not retried on the other facilitator. CDP's published fee after the free tier is $0.001 per successful settlement. PayAI Solana mainnet exact is $0.00133. Devnet PayAI settlements are free. At startup Advan warns, or exits when `X402_PRICE_GUARD=refuse`, if the price is below `X402_MIN_FEE_MULTIPLE` (default 5) times the applicable fee. $0.01 is about 7.5× the PayAI mainnet fee. $0.005 is not.
+
+`get_quote` and `build_swap_tx` are not gated.
+
+## Guards
+
+Before a quote or transaction is returned:
+
+- requested `slippageBps` must be ≤ `MAX_SLIPPAGE_BPS` (default 300)
+- if the client omits slippage, Jupiter's RTSE value in the response must still be ≤ the max
+- `amount` must be ≤ `MAX_INPUT_AMOUNT` when that cap is set (base units)
+- USD size (`amount` × Jupiter Price V3) must be ≤ `MAX_TRADE_USD` when that cap is set; a missing price refuses the trade
+- absolute price impact must be ≤ `MAX_PRICE_IMPACT_PCT` (default 5). Jupiter's `priceImpactPct` is treated as a fraction
+
+## Swap signing
+
+`build_swap_tx` defaults to the managed path (`SWAP_SELF_BROADCAST_DEFAULT=false`):
+
+- JupiterZ (RFQ) routes are allowed. They need the market maker's co-signature, which Jupiter adds during `POST https://api.jup.ag/swap/v2/execute` with `{ signedTransaction, requestId }`.
+- The response includes `submit.method: "jupiter"`, `requestId`, and `coSignRequired` when the router is `jupiterz`.
+- The transaction field is unsigned. Sign it with the taker wallet, then send it to `/execute` promptly (`lastValidBlockHeight` or `expireAt`).
+
+Pass `selfBroadcast: true` (or set the env default) to send `excludeRouters=jupiterz`. The tool then rejects a `signatureFeePayer` other than the taker, and rejects a response that is still a JupiterZ route. The taker signs and broadcasts that transaction on their own RPC.
+
+## Install
+
+Node.js 20 or newer.
+
+```bash
+npm install
+npm run build
+cp .env.example .env
+```
+
+Stdio (Claude Desktop, Cursor, or `npx` after publish):
+
+```bash
+npm start
+# or, once published:
+npx advan-mcp
+```
+
+HTTP (plain JSON and Streamable HTTP MCP on `/mcp`):
+
+```bash
+npm run start:http
+# listens on $HOST:$PORT, default 0.0.0.0:8787
+```
+
+Docker:
+
+```bash
+docker build -t advan .
+docker run --env-file .env -p 8787:8787 -v advan-logs:/app/logs advan
+```
+
+The image runs the HTTP server only. Referral setup scripts run from a checkout (`npm install` includes the Jupiter referral SDK as a dev dependency).
+
+## Claude Desktop and Cursor
+
+Paid tools need an x402-aware client. Claude Desktop and Cursor will see a payment-required (or payments-unconfigured) error for `token_risk` and `wallet_portfolio`. Use them for `get_quote` and `build_swap_tx`, and use `scripts/e2e-devnet-x402.ts` or `createx402MCPClient` for paid tools.
+
+Claude Desktop `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "advan": {
+      "command": "node",
+      "args": ["/absolute/path/to/advan/dist/index.js"],
+      "env": {
+        "SOLANA_RPC_URL": "https://api.mainnet-beta.solana.com",
+        "JUPITER_API_KEY": "",
+        "JUPITER_REFERRAL_ACCOUNT": "",
+        "JUPITER_REFERRAL_FEE_BPS": "50",
+        "JUPITER_REFERRAL_TOKEN_ACCOUNT_SOL": "",
+        "JUPITER_REFERRAL_TOKEN_ACCOUNT_USDC": "",
+        "JUPITER_REFERRAL_TOKEN_ACCOUNT_USDT": "",
+        "MAX_SLIPPAGE_BPS": "300",
+        "MAX_TRADE_USD": "1000",
+        "X402_PAY_TO": "",
+        "X402_PRICE_USD": "0.01",
+        "X402_NETWORK": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+        "CDP_API_KEY_ID": "",
+        "CDP_API_KEY_SECRET": ""
+      }
+    }
+  }
+}
+```
+
+Cursor `.cursor/mcp.json` uses the same `mcpServers` object. During development you can point `command` at `npx` with args `["tsx", "src/index.ts"]` from the repo root.
+
+## HTTP API
+
+`POST` bodies are JSON. Free routes return the tool result. Paid routes answer **402** with `PAYMENT-REQUIRED` until the client retries with `PAYMENT-SIGNATURE` (x402 V2). A browser without a wallet gets the facilitator paywall HTML; API clients that send `Accept: application/json` also get a JSON body from `unpaidResponseBody`.
+
+| Method | Path | Body |
+|---|---|---|
+| GET | `/health` | — |
+| GET | `/stats` | — |
+| POST | `/v1/get_quote` | `{ "inputMint", "outputMint", "amount", "slippageBps"? }` |
+| POST | `/v1/build_swap_tx` | quote fields plus `taker`, optional `selfBroadcast`, optional `receiver` |
+| POST | `/v1/token_risk` | `{ "mint" }` |
+| POST | `/v1/wallet_portfolio` | `{ "owner" }` |
+| POST | `/mcp` | Streamable HTTP MCP (stateless JSON responses) |
+
+`amount` is an integer string in base units. Addresses are base58. `slippageBps` is an integer 0–10000, then capped by `MAX_SLIPPAGE_BPS`.
+
+Example:
+
+```bash
+curl -s http://127.0.0.1:8787/health
+curl -s http://127.0.0.1:8787/v1/get_quote \
+  -H 'content-type: application/json' \
+  -d '{"inputMint":"So11111111111111111111111111111111111111112","outputMint":"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v","amount":"10000000"}'
+```
+
+`/stats` summarizes the JSONL usage log: calls, calls today (UTC), errors, `fee_check_failure` rows, x402 verifies / settlements / failed settlements, USDC base units received, and an **estimate** of integrator referral fees (80% of `feeBps` on the fee mint). On-chain accrued fees are the referral token-account balances (referral.jup.ag or `npm run claim:referral`), not that estimate.
+
+Each log line is one JSON object with `kind` of `tool`, `fee_check_failure`, `x402_settlement`, or `facilitator_failover`, plus `tool`, `ts`, `latencyMs`, `success`, `error`, `errorCode`, `paymentStatus`, `facilitator`, `feeBps`, `feeMint`, `estimatedIntegratorFeeRaw`, and `usdcAtomic` where they apply.
+
+## Referral setup
+
+From a checkout (needs the dev dependency `@jup-ag/referral-sdk`):
+
+```bash
+REFERRAL_PAYER_PUBKEY=<your wallet> REFERRAL_NAME=advan npm run setup:referral
+```
+
+The script prints unsigned transactions (referral account, then wSOL, USDC, and USDT token accounts) using Jupiter's referral project `DkiqsTrw1u1bYFumumC7sCG2S8K25qc2vemJFHyW2wJc`. Sign and send them in order from that wallet. Put the printed referral account and token accounts into `.env`. Optional `REFERRAL_MINTS` adds more fee mints. `REFERRAL_PARTNER_PUBKEY` defaults to the payer.
+
+```bash
+REFERRAL_PAYER_PUBKEY=<partner> JUPITER_REFERRAL_ACCOUNT=<account> npm run claim:referral
+```
+
+That prints unsigned `claimAllV2` transactions. Nothing is signed in either script.
+
+## Devnet x402 test
+
+1. Create a keypair and request devnet SOL only if you need it for the ATA setup. The x402 exact scheme uses the facilitator as the fee payer, so the buyer needs devnet USDC, not SOL, to pay for a call.
+2. Get devnet USDC from the Circle faucet (Solana Devnet), mint `4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU`.
+3. Create the payee USDC account (unsigned; sign it yourself):
+
+```bash
+X402_NETWORK=solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1 \
+X402_PAY_TO=<payee pubkey> \
+REFERRAL_PAYER_PUBKEY=<account that pays rent> \
+SOLANA_RPC_URL=https://api.devnet.solana.com \
+npm run setup:payto-ata
+```
+
+4. Start the HTTP server with `X402_PAY_TO`, `X402_NETWORK` (devnet), and either CDP keys or no CDP keys (PayAI, free on devnet). `X402_PRICE_USD` can be `0.01` or `0.005`.
+5. Pay from the buyer keypair:
+
+```bash
+SOLANA_KEYPAIR_PATH=./devnet-payer.json \
+ADVAN_HTTP_URL=http://127.0.0.1:8787 \
+X402_NETWORK=solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1 \
+npm run e2e:devnet
+```
+
+`token_risk` in that script still reads `SOLANA_RPC_URL` on the server (mainnet by default). The payment network and the data RPC are separate.
+
+MCP smoke test (lists tools, optionally hits Jupiter, asserts the paid tool does not return a report for free):
+
+```bash
+npm run smoke:mcp
+SKIP_LIVE=1 npm run smoke:mcp
+```
+
+## Development
+
+```bash
+npm run lint
+npm run typecheck
+npm test
+npm run build
+```
+
+CI runs those four steps on Node 20. Unit tests mock Jupiter, RPC, and facilitators.
+
+## Open decisions
+
+These are configuration, not hardcoded wallets:
+
+- **Referral fee** defaults to the 50 bps minimum. Raising it (up to 255) earns more and makes quotes less competitive. Jupiter keeps 20%.
+- **x402 price** defaults to $0.01 so a PayAI mainnet settlement ($0.00133) stays under about 13% of the price. Set `X402_PRICE_USD=0.005` if you accept a tighter margin; mainnet will warn at the 5× check.
+- **Package name** `advan-mcp` looked free on 2026-10-25. This repo does not publish it.
+- **Hosting** is undecided. The Dockerfile listens on 8787. Put a real RPC URL in `SOLANA_RPC_URL` before production traffic; `api.mainnet-beta.solana.com` is rate-limited.
+- **CDP** keys are free to create. The first 1,000 successful settlements each month are free, then $0.001. Whether devnet settlements count toward that quota is not stated in the CDP docs.
+- **PayAI** includes 1,000 free credits total (not monthly). Devnet settlements are free. Topping up is a spending decision.
+- **Self-broadcast default** is off so JupiterZ can compete. Turn `SWAP_SELF_BROADCAST_DEFAULT` on if every client broadcasts its own transaction.
+- **`FEE_CHECK_MODE`** defaults to `fail`. Use `warn` only if you would rather return a transaction whose integrator fee did not stick.
+- **`X402_PRICE_GUARD`** defaults to `warn`. Set `refuse` in production if a too-low price should stop the process.
