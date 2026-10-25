@@ -3,6 +3,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { paymentMiddleware } from "@x402/express";
 import type { Express, NextFunction, Request, Response } from "express";
 import type { Network } from "@x402/core/types";
+import { decodePaymentRequiredHeader } from "@x402/core/http";
 import { AdvanError, PaymentsUnconfiguredError, toAdvanError } from "../errors.js";
 import { readUsageEvents, summarizeUsage } from "../stats.js";
 import { buildSwapTx } from "../tools/buildSwap.js";
@@ -29,9 +30,27 @@ export function createApp(options: AppOptions): Express {
   // createMcpExpressApp already installs express.json(). A second parser throws
   // "stream is not readable" because the body has been consumed.
   app.use((req, res, next) => {
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type, PAYMENT-SIGNATURE, X-PAYMENT");
-    res.setHeader("Access-Control-Expose-Headers", "PAYMENT-REQUIRED, PAYMENT-RESPONSE");
+    const origin = ctx.config.corsOrigin;
+    if (origin) {
+      res.setHeader("Access-Control-Allow-Origin", origin);
+      res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
+      res.setHeader("Access-Control-Allow-Headers", "Content-Type, Accept, PAYMENT-SIGNATURE, X-PAYMENT");
+      res.setHeader("Access-Control-Expose-Headers", "PAYMENT-REQUIRED, PAYMENT-RESPONSE");
+      if (origin !== "*") res.setHeader("Vary", "Origin");
+    }
+    const originalJson = res.json.bind(res);
+    res.json = ((body?: unknown) => {
+      if (res.statusCode !== 402) return originalJson(body);
+      const reason = facilitatorReason(res.getHeader("PAYMENT-REQUIRED"));
+      if (!reason || reason === "Payment required") return originalJson(body);
+      const base = body && typeof body === "object" ? (body as Record<string, unknown>) : {};
+      return originalJson({
+        ...base,
+        error: reason,
+        facilitatorReason: reason,
+        code: typeof base.code === "string" ? base.code : "payment_required",
+      });
+    }) as typeof res.json;
     if (req.method === "OPTIONS") {
       res.sendStatus(204);
       return;
@@ -120,6 +139,9 @@ export function createApp(options: AppOptions): Express {
         facilitator: x402?.facilitator.active ?? "none",
         x402Network: ctx.config.x402.network,
         x402PriceUsd: ctx.config.x402.priceUsd,
+        dataRpc: rpcOrigin(ctx.config.solanaRpcUrl),
+        x402Rpc: rpcOrigin(ctx.config.x402.rpcUrl),
+        dataCluster: ctx.config.dataCluster,
         swapSelfBroadcastDefault: ctx.config.swapSelfBroadcastDefault,
       },
     });
@@ -185,6 +207,24 @@ export function createApp(options: AppOptions): Express {
   });
 
   return app;
+}
+
+function facilitatorReason(header: string | number | string[] | undefined): string | undefined {
+  const value = Array.isArray(header) ? header[0] : header;
+  if (typeof value !== "string" || value.length === 0) return undefined;
+  try {
+    return decodePaymentRequiredHeader(value).error;
+  } catch {
+    return undefined;
+  }
+}
+
+function rpcOrigin(url: string): string {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return "invalid";
+  }
 }
 
 function withPayment(ctx: ToolContext, x402: X402Runtime | null, paymentStatus: ToolContext["paymentStatus"]): ToolContext {

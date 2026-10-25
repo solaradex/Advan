@@ -30,6 +30,9 @@ export interface SolanaRpc {
   getMint(mint: string): Promise<MintAccount | null>;
   getTokenAccountsByOwner(owner: string, programId: string): Promise<TokenHolding[]>;
   getTokenLargestAccounts(mint: string): Promise<LargestAccount[]>;
+  /** `unknown` means the RPC call failed. Callers must not treat that as "missing". */
+  accountExists(address: string): Promise<boolean | "unknown">;
+  getAccountData(address: string): Promise<Uint8Array | null>;
 }
 
 export function createSolanaRpc(rpcUrl: string, timeoutMs: number, fetchImpl: typeof fetch = fetch): SolanaRpc {
@@ -99,6 +102,23 @@ export function createSolanaRpc(rpcUrl: string, timeoutMs: number, fetchImpl: ty
     async getTokenLargestAccounts(mint) {
       const result = await call<{ value: LargestAccount[] }>("getTokenLargestAccounts", [mint]);
       return result.value ?? [];
+    },
+    async accountExists(address) {
+      try {
+        const result = await call<{ value: unknown }>("getAccountInfo", [address, { encoding: "base64" }]);
+        return result.value != null;
+      } catch {
+        return "unknown";
+      }
+    },
+    async getAccountData(address) {
+      const result = await call<{ value: { data?: [string, string] } | null }>("getAccountInfo", [
+        address,
+        { encoding: "base64" },
+      ]);
+      const encoded = result.value?.data?.[0];
+      if (!encoded) return null;
+      return Buffer.from(encoded, "base64");
     },
   };
 }

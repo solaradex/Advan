@@ -21,7 +21,7 @@ export interface PresentedOrder {
   platformFee?: OrderResponse["platformFee"];
   referralAccount?: string | null;
   gasless?: boolean;
-  feeCheck: { ok: boolean; skipped: boolean; failures: string[] };
+  feeCheck: { ok: boolean; skipped: boolean; failures: string[]; warning?: string; omittedReferral?: boolean };
   estimatedFeeRaw?: string;
   estimatedIntegratorFeeRaw?: string;
   integratorNetBps?: number;
@@ -54,7 +54,13 @@ export function presentOrder(
     platformFee: order.platformFee,
     referralAccount: order.referralAccount,
     gasless: order.gasless,
-    feeCheck: { ok: fee.ok, skipped: fee.skipped, failures: fee.failures },
+    feeCheck: {
+      ok: fee.ok,
+      skipped: fee.skipped,
+      failures: fee.failures,
+      warning: fee.warning,
+      omittedReferral: fee.omittedReferral,
+    },
     estimatedFeeRaw: fee.estimatedFeeRaw,
     estimatedIntegratorFeeRaw: fee.estimatedIntegratorFeeRaw,
     integratorNetBps: fee.integratorNetBps,

@@ -17,14 +17,17 @@ import {
 } from "../src/x402/fallbackFacilitator.js";
 
 const payload = {} as PaymentPayload;
-const requirements = {} as PaymentRequirements;
 
-function supported(network: Network = SOLANA_DEVNET_CAIP): SupportedResponse {
+function supported(network: Network = SOLANA_DEVNET_CAIP, feePayer = "CDP_FEE"): SupportedResponse {
   return {
-    kinds: [{ x402Version: 2, scheme: "exact", network }],
+    kinds: [{ x402Version: 2, scheme: "exact", network, extra: { feePayer } }],
     extensions: [],
     signers: {},
   };
+}
+
+function priced(feePayer: string): PaymentRequirements {
+  return { extra: { feePayer } } as unknown as PaymentRequirements;
 }
 
 class FakeFacilitator implements FacilitatorClient {
@@ -97,38 +100,61 @@ describe("facilitator fallback policy", () => {
     expect(payai.supportedCalls).toBe(1);
     expect(client.active).toBe("payai");
 
-    const healthy = new FakeFacilitator();
-    const unused = new FakeFacilitator();
+    const healthy = new FakeFacilitator({ supported: supported(SOLANA_DEVNET_CAIP, "CDP_FEE") });
+    const unused = new FakeFacilitator({ supported: supported(SOLANA_DEVNET_CAIP, "PAYAI_FEE") });
     const pinned = new FallbackFacilitatorClient(healthy, unused, SOLANA_DEVNET_CAIP);
-    await pinned.getSupported();
-    expect(unused.supportedCalls).toBe(0);
+    const chosen = await pinned.getSupported();
     expect(pinned.active).toBe("cdp");
+    expect(unused.supportedCalls).toBe(1);
+    expect(chosen.kinds[0]?.extra).toMatchObject({ feePayer: "CDP_FEE" });
   });
 
-  it("falls back on verify server errors and does not retry a settle that reached CDP", async () => {
-    const primary = new FakeFacilitator({ verify: httpError(500), settle: httpError(500) });
-    const payai = new FakeFacilitator();
-    const client = new FallbackFacilitatorClient(primary, payai, SOLANA_DEVNET_CAIP);
-    await expect(client.verify(payload, requirements)).resolves.toMatchObject({ isValid: true });
-    expect(payai.verifyCalls).toBe(1);
-    await expect(client.settle(payload, requirements)).rejects.toThrow(/500/);
+  it("routes verify and settle to the facilitator that owns extra.feePayer", async () => {
+    const primary = new FakeFacilitator({
+      supported: supported(SOLANA_DEVNET_CAIP, "CDP_FEE"),
+      verify: httpError(500),
+      settle: httpError(500),
+    });
+    const payai = new FakeFacilitator({ supported: supported(SOLANA_DEVNET_CAIP, "PAYAI_FEE") });
+    let refreshes = 0;
+    const client = new FallbackFacilitatorClient(primary, payai, SOLANA_DEVNET_CAIP, undefined, async () => {
+      refreshes += 1;
+    });
+    await client.getSupported();
+    await expect(client.verify(payload, priced("CDP_FEE"))).rejects.toThrow(/500/);
+    expect(payai.verifyCalls).toBe(0);
+    expect(client.active).toBe("payai");
+    expect(refreshes).toBe(1);
+    await expect(client.settle(payload, priced("CDP_FEE"))).rejects.toThrow(/500/);
     expect(payai.settleCalls).toBe(0);
+    await expect(client.verify(payload, priced("PAYAI_FEE"))).resolves.toMatchObject({ isValid: true });
+    expect(payai.verifyCalls).toBe(1);
+    expect(primary.verifyCalls).toBe(1);
+    const rebuilt = await client.getSupported();
+    expect(rebuilt.kinds[0]?.extra).toMatchObject({ feePayer: "PAYAI_FEE" });
   });
 
-  it("retries settle only when the request did not submit, including connect failure", async () => {
-    const refused = new FakeFacilitator({ settle: connectError() });
-    const payai = new FakeFacilitator();
+  it("does not retry a settle that reached CDP, including a connect failure with that fee payer", async () => {
+    const refused = new FakeFacilitator({
+      supported: supported(SOLANA_DEVNET_CAIP, "CDP_FEE"),
+      settle: connectError(),
+    });
+    const payai = new FakeFacilitator({ supported: supported(SOLANA_DEVNET_CAIP, "PAYAI_FEE") });
     const client = new FallbackFacilitatorClient(refused, payai, SOLANA_DEVNET_CAIP);
-    await expect(client.settle(payload, requirements)).resolves.toMatchObject({ success: true });
-    expect(payai.settleCalls).toBe(1);
+    await client.getSupported();
+    await expect(client.settle(payload, priced("CDP_FEE"))).rejects.toThrow(/fetch failed/);
+    expect(payai.settleCalls).toBe(0);
+    expect(client.active).toBe("payai");
 
     const timeout = new Error("settle timed out");
     timeout.name = "FacilitatorTimeoutError";
-    const slow = new FakeFacilitator({ settle: timeout });
-    const other = new FakeFacilitator();
+    const slow = new FakeFacilitator({ settle: timeout, supported: supported(SOLANA_DEVNET_CAIP, "CDP_FEE") });
+    const other = new FakeFacilitator({ supported: supported(SOLANA_DEVNET_CAIP, "PAYAI_FEE") });
     const stuck = new FallbackFacilitatorClient(slow, other, SOLANA_DEVNET_CAIP);
-    await expect(stuck.settle(payload, requirements)).rejects.toThrow(/timed out/);
+    await stuck.getSupported();
+    await expect(stuck.settle(payload, priced("CDP_FEE"))).rejects.toThrow(/timed out/);
     expect(other.settleCalls).toBe(0);
+    expect(stuck.active).toBe("cdp");
   });
 
   it("falls back when CDP does not advertise exact v2 for the network", async () => {

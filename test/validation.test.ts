@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { httpDiscovery, DISCOVERY_EXAMPLES } from "../src/x402/setup.js";
 import { quoteSchema, swapSchema, tokenRiskSchema, portfolioSchema } from "../src/tools/schemas.js";
 import { ConfigError } from "../src/errors.js";
 import { loadConfig } from "../src/config.js";
@@ -29,5 +30,22 @@ describe("tool input validation", () => {
     expect(config.swapSelfBroadcastDefault).toBe(false);
     expect(config.x402.priceUsd).toBe(0.01);
     expect(config.x402.network).toBe("solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1");
+    expect(config.host).toBe("127.0.0.1");
+    expect(config.limits.maxTradeUsd).toBe(1000);
+    expect(config.referralMissingMintMode).toBe("requote");
+    expect(config.x402.rpcUrl).toBe("https://api.devnet.solana.com");
+    expect(config.solanaRpcUrl).toBe("https://api.mainnet-beta.solana.com");
+    expect(config.x402.rpcUrl).not.toBe(config.solanaRpcUrl);
+    expect(loadConfig({ X402_NETWORK: "mainnet", X402_RPC_URL: "https://rpc.example" }).x402.rpcUrl).toBe(
+      "https://rpc.example",
+    );
+    const discovery = httpDiscovery("token_risk") as {
+      bazaar: { info: { input: { body: { mint: string } } } };
+    };
+    expect(discovery.bazaar.info.input.body.mint).toBe(DISCOVERY_EXAMPLES.tokenRisk.mint);
+    const portfolio = httpDiscovery("wallet_portfolio") as {
+      bazaar: { info: { input: { body: { owner: string } } } };
+    };
+    expect(portfolio.bazaar.info.input.body.owner).toBe(DISCOVERY_EXAMPLES.portfolio.owner);
   });
 });

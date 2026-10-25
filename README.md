@@ -26,15 +26,24 @@ Jupiter picks the fee mint (SOL, then stables, then LSTs, then other tokens). If
 - `referralAccount` matches the configured account
 - `feeBps` equals the configured fee when `gasless` is false
 - `feeBps` is at least the configured fee when `gasless` is true (gasless cost can add bps)
-- `feeMint` has a configured referral token account
+- `feeMint` has a configured referral token account, and that account is the PDA derived from seeds `referral_ata`, the referral account, and the mint (`REFER4ZgmyYx9c6He5XfaTMiGfdLwRnkV4RPp9t9iF3`). A swapped account fails the check.
+- At startup Advan checks that each configured referral token account exists on `SOLANA_RPC_URL`. A missing account is recorded. A PDA mismatch refuses to boot.
 
-`FEE_CHECK_MODE=fail` (default) withholds the quote and the transaction. `warn` returns them with `feeCheck.ok: false` and logs a `fee_check_failure` event either way. Leave the account unset and orders are sent with no referral (a startup warning says so). `JUPITER_REFERRAL_REQUIRED=true` refuses to boot without the account and wSOL, USDC, and USDT token accounts.
+`FEE_CHECK_MODE=fail` (default) withholds the quote and the transaction when the fee itself is wrong. `warn` returns them with `feeCheck.ok: false` and logs a `fee_check_failure` event either way.
+
+A token-to-token route can pick a `feeMint` you have not created an account for. `REFERRAL_MISSING_MINT_MODE=requote` (default) quotes that pair again **without** `referralAccount` / `referralFee`, returns the quote, and writes a `referral_requote` log line. `fail` refuses the swap. `warn` returns the original order with `feeCheck.ok: false`. Add the mint with `REFERRAL_MINTS` on `npm run setup:referral` if you want the fee on that pair.
+
+Leave the account unset and orders are sent with no referral (a startup warning says so). `JUPITER_REFERRAL_REQUIRED=true` refuses to boot without the account and wSOL, USDC, and USDT token accounts.
 
 **x402.** `token_risk` and `wallet_portfolio` use the exact scheme. The buyer pays USDC to `X402_PAY_TO` on `X402_NETWORK`. Default network is Solana devnet (`solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1`) and devnet USDC `4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU`. Mainnet is `solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp` and USDC `EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v`. The recipient USDC token account must already exist (`npm run setup:payto-ata`).
 
 `@x402/evm` is a dependency because `@coinbase/cdp-sdk/x402` loads it. Advan registers only the Solana exact scheme.
 
-Coinbase CDP is the primary facilitator when `CDP_API_KEY_ID` and `CDP_API_KEY_SECRET` are set. PayAI (`https://facilitator.payai.network`) is used when the CDP probe fails, and it is the only facilitator when CDP keys are absent. A settle that might already have been submitted (timeout or HTTP 5xx) is not retried on the other facilitator. CDP's published fee after the free tier is $0.001 per successful settlement. PayAI Solana mainnet exact is $0.00133. Devnet PayAI settlements are free. At startup Advan warns, or exits when `X402_PRICE_GUARD=refuse`, if the price is below `X402_MIN_FEE_MULTIPLE` (default 5) times the applicable fee. $0.01 is about 7.5× the PayAI mainnet fee. $0.005 is not.
+Coinbase CDP is the primary facilitator when `CDP_API_KEY_ID` and `CDP_API_KEY_SECRET` are set. PayAI (`https://facilitator.payai.network`) is used when the CDP `/supported` probe fails, and it is the only facilitator when CDP keys are absent. Verify and settle are sent to the facilitator whose advertised `extra.feePayer` is on the payment requirements. An in-flight payment is not handed to the other facilitator: that fee payer would not match, and the settlement would fail. When CDP fails in a way that is safe to fail over, Advan marks it down and the next payment challenge is rebuilt with PayAI's fee payer. A settle timeout or HTTP 5xx is not treated as a failover. Failed verifications are logged as `x402_verification` and the facilitator's reason is returned on the 402 (`PAYMENT-REQUIRED` `error`, and `facilitatorReason` in the JSON body).
+
+MCP payment requirements, including the Solana blockhash, are built on every paid call. HTTP builds them per request. Both use `X402_RPC_URL`, which defaults from `X402_NETWORK` and is never `SOLANA_RPC_URL`.
+
+CDP's published fee after the free tier is $0.001 per successful settlement. PayAI Solana mainnet exact is $0.00133. Devnet PayAI settlements are free. At startup Advan warns, or exits when `X402_PRICE_GUARD=refuse`, if the price is below `X402_MIN_FEE_MULTIPLE` (default 5) times the applicable fee. $0.01 is about 7.5× the PayAI mainnet fee. $0.005 is not.
 
 `get_quote` and `build_swap_tx` are not gated.
 
@@ -44,8 +53,8 @@ Before a quote or transaction is returned:
 
 - requested `slippageBps` must be ≤ `MAX_SLIPPAGE_BPS` (default 300)
 - if the client omits slippage, Jupiter's RTSE value in the response must still be ≤ the max
-- `amount` must be ≤ `MAX_INPUT_AMOUNT` when that cap is set (base units)
-- USD size (`amount` × Jupiter Price V3) must be ≤ `MAX_TRADE_USD` when that cap is set; a missing price refuses the trade
+- `amount` must be ≤ `MAX_INPUT_AMOUNT` when that cap is set (base units). Unset prints a startup warning.
+- USD size (`amount` × Jupiter Price V3) must be ≤ `MAX_TRADE_USD` (default **1000**). Set `MAX_TRADE_USD=off` to disable it. A missing price refuses the trade while the cap is on. Startup warns loudly if both caps are off.
 - absolute price impact must be ≤ `MAX_PRICE_IMPACT_PCT` (default 5). Jupiter's `priceImpactPct` is treated as a fraction
 
 ## Swap signing
@@ -80,7 +89,8 @@ HTTP (plain JSON and Streamable HTTP MCP on `/mcp`):
 
 ```bash
 npm run start:http
-# listens on $HOST:$PORT, default 0.0.0.0:8787
+# listens on $HOST:$PORT, default 127.0.0.1:8787
+# Docker sets HOST=0.0.0.0. Set ADVAN_ALLOWED_HOSTS when you bind a public interface.
 ```
 
 Docker:
@@ -154,7 +164,7 @@ curl -s http://127.0.0.1:8787/v1/get_quote \
 
 `/stats` summarizes the JSONL usage log: calls, calls today (UTC), errors, `fee_check_failure` rows, x402 verifies / settlements / failed settlements, USDC base units received, and an **estimate** of integrator referral fees (80% of `feeBps` on the fee mint). On-chain accrued fees are the referral token-account balances (referral.jup.ag or `npm run claim:referral`), not that estimate.
 
-Each log line is one JSON object with `kind` of `tool`, `fee_check_failure`, `x402_settlement`, or `facilitator_failover`, plus `tool`, `ts`, `latencyMs`, `success`, `error`, `errorCode`, `paymentStatus`, `facilitator`, `feeBps`, `feeMint`, `estimatedIntegratorFeeRaw`, and `usdcAtomic` where they apply.
+Each log line is one JSON object with `kind` of `tool`, `fee_check_failure`, `referral_requote`, `x402_settlement`, `x402_verification`, or `facilitator_failover`, plus `tool`, `ts`, `latencyMs`, `success`, `error`, `errorCode`, `paymentStatus`, `facilitator`, `feeBps`, `feeMint`, `estimatedIntegratorFeeRaw`, and `usdcAtomic` where they apply. `/health` reports the data RPC origin and the x402 RPC origin separately.
 
 ## Referral setup
 
@@ -176,29 +186,30 @@ That prints unsigned `claimAllV2` transactions. Nothing is signed in either scri
 
 1. Create a keypair and request devnet SOL only if you need it for the ATA setup. The x402 exact scheme uses the facilitator as the fee payer, so the buyer needs devnet USDC, not SOL, to pay for a call.
 2. Get devnet USDC from the Circle faucet (Solana Devnet), mint `4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU`.
-3. Create the payee USDC account (unsigned; sign it yourself):
+3. Create the payee USDC account (unsigned; sign it yourself). This script uses `X402_RPC_URL`, or the public RPC for `X402_NETWORK` when that is unset. It does not read `SOLANA_RPC_URL`.
 
 ```bash
 X402_NETWORK=solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1 \
 X402_PAY_TO=<payee pubkey> \
 REFERRAL_PAYER_PUBKEY=<account that pays rent> \
-SOLANA_RPC_URL=https://api.devnet.solana.com \
+X402_RPC_URL=https://api.devnet.solana.com \
 npm run setup:payto-ata
 ```
 
-4. Start the HTTP server with `X402_PAY_TO`, `X402_NETWORK` (devnet), and either CDP keys or no CDP keys (PayAI, free on devnet). `X402_PRICE_USD` can be `0.01` or `0.005`.
-5. Pay from the buyer keypair:
+4. Start the HTTP server with `X402_PAY_TO` and `X402_NETWORK` (devnet). Leave `SOLANA_RPC_URL` on mainnet if `token_risk` should read mainnet mints. Set `X402_RPC_URL` only when the public devnet RPC is not the one you want; when it is unset Advan derives `https://api.devnet.solana.com` from the devnet CAIP id. Do not point `X402_RPC_URL` at mainnet. Use CDP keys or leave them unset (PayAI, free on devnet). `X402_PRICE_USD` can be `0.01` or `0.005`.
+5. Pay from the buyer keypair. `X402_CLIENT_RPC_URL` is the buyer's RPC for the USDC transfer. The public devnet RPC is often unreachable, so set one you can use. The script pays for `token_risk` and `wallet_portfolio`.
 
 ```bash
 SOLANA_KEYPAIR_PATH=./devnet-payer.json \
 ADVAN_HTTP_URL=http://127.0.0.1:8787 \
 X402_NETWORK=solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1 \
+X402_CLIENT_RPC_URL=https://api.devnet.solana.com \
 npm run e2e:devnet
 ```
 
-`token_risk` in that script still reads `SOLANA_RPC_URL` on the server (mainnet by default). The payment network and the data RPC are separate.
+`token_risk` and `wallet_portfolio` read `SOLANA_RPC_URL` (mainnet by default). The payment blockhash comes only from `X402_RPC_URL`. Native SOL in a devnet portfolio is still priced from Jupiter's mainnet wSOL market, because devnet has no SOL/USD book. The response field `sol.priceSource` says which one was used.
 
-MCP smoke test (lists tools, optionally hits Jupiter, asserts the paid tool does not return a report for free):
+MCP smoke test (stdio and Streamable HTTP: lists tools, optionally hits Jupiter for `get_quote` and `build_swap_tx`, and parses the unpaid `token_risk` payment-required payload):
 
 ```bash
 npm run smoke:mcp

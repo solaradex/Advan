@@ -21,7 +21,7 @@ const network = process.env.X402_NETWORK || SOLANA_DEVNET_CAIP;
 const mainnet = network === "mainnet" || network === SOLANA_MAINNET_CAIP || network === "solana";
 const mint = new PublicKey(mainnet ? USDC_MAINNET_MINT : USDC_DEVNET_MINT);
 const rpc =
-  process.env.SOLANA_RPC_URL || (mainnet ? "https://api.mainnet-beta.solana.com" : "https://api.devnet.solana.com");
+  process.env.X402_RPC_URL || (mainnet ? "https://api.mainnet-beta.solana.com" : "https://api.devnet.solana.com");
 const owner = new PublicKey(ownerRaw);
 const payer = new PublicKey(payerRaw);
 const ata = getAssociatedTokenAddressSync(mint, owner);

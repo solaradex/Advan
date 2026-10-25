@@ -13,6 +13,7 @@ export interface UsageStats {
     verified: number;
     settled: number;
     failedSettlements: number;
+    failedVerifications: number;
     usdcAtomicReceived: string;
   };
   referral: {
@@ -20,6 +21,7 @@ export interface UsageStats {
     estimatedIntegratorFeeRawByMint: Record<string, string>;
   };
   facilitatorFailovers: number;
+  referralRequotes: number;
   notes: string[];
 }
 
@@ -27,6 +29,7 @@ const NOTES = [
   "calls counts tool invocations, including fee-check failures. x402 settlement rows are not extra calls.",
   "usdcAtomicReceived sums successful x402 settlements recorded in this log (USDC base units, 6 decimals).",
   "estimatedIntegratorFeeRawByMint sums 80% of the quoted fee (Jupiter keeps 20%). On-chain accrued fees are the referral token-account balances, not this estimate.",
+  "failedVerifications counts x402 verify failures. referralRequotes counts orders that were priced again without a referral fee because the fee mint had no usable token account.",
 ];
 
 function isCall(event: UsageEvent): boolean {
@@ -45,9 +48,11 @@ export function summarizeUsage(events: UsageEvent[], now = new Date()): UsageSta
   let verified = 0;
   let settled = 0;
   let failedSettlements = 0;
+  let failedVerifications = 0;
   let usdc = 0n;
   let eventsWithFee = 0;
   let facilitatorFailovers = 0;
+  let referralRequotes = 0;
 
   for (const event of events) {
     if (isCall(event)) {
@@ -67,6 +72,8 @@ export function summarizeUsage(events: UsageEvent[], now = new Date()): UsageSta
     }
     if (event.kind === "fee_check_failure") feeCheckFailures += 1;
     if (event.kind === "facilitator_failover") facilitatorFailovers += 1;
+    if (event.kind === "referral_requote") referralRequotes += 1;
+    if (event.kind === "x402_verification" && !event.success) failedVerifications += 1;
     if (event.paymentStatus === "verified" && isCall(event)) verified += 1;
     if (event.kind === "x402_settlement" && event.success && event.paymentStatus === "settled") {
       settled += 1;
@@ -94,6 +101,7 @@ export function summarizeUsage(events: UsageEvent[], now = new Date()): UsageSta
       verified,
       settled,
       failedSettlements,
+      failedVerifications,
       usdcAtomicReceived: usdc.toString(),
     },
     referral: {
@@ -101,6 +109,7 @@ export function summarizeUsage(events: UsageEvent[], now = new Date()): UsageSta
       estimatedIntegratorFeeRawByMint,
     },
     facilitatorFailovers,
+    referralRequotes,
     notes: NOTES,
   };
 }

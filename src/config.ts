@@ -1,6 +1,7 @@
 import {
   CDP_SETTLEMENT_FEE_USD,
   DEFAULT_FEE_MULTIPLE,
+  DEFAULT_MAX_TRADE_USD,
   DEFAULT_REFERRAL_FEE_BPS,
   DEFAULT_X402_PRICE_USD,
   PAYAI_DEVNET_EXACT_FEE_USD,
@@ -9,7 +10,9 @@ import {
   REFERRAL_FEE_MAX_BPS,
   REFERRAL_FEE_MIN_BPS,
   SOLANA_DEVNET_CAIP,
+  SOLANA_DEVNET_RPC,
   SOLANA_MAINNET_CAIP,
+  SOLANA_MAINNET_RPC,
   USDC_DEVNET_MINT,
   USDC_MAINNET_MINT,
   USDT_MAINNET_MINT,
@@ -21,6 +24,8 @@ import { buildReferralTokenAccountMap } from "./jupiter/referralAccounts.js";
 export type FeeCheckMode = "fail" | "warn";
 export type PriceGuardMode = "warn" | "refuse";
 export type SolanaCluster = "mainnet" | "devnet";
+/** What to do when Jupiter's fee mint has no usable referral token account. */
+export type ReferralMissingMintMode = "requote" | "fail" | "warn";
 
 export interface X402Config {
   payTo?: string;
@@ -36,6 +41,8 @@ export interface X402Config {
   cdpConfigured: boolean;
   facilitatorTimeoutMs: number;
   required: boolean;
+  /** RPC used only to embed an x402 payment blockhash. Never SOLANA_RPC_URL. */
+  rpcUrl: string;
 }
 
 export interface ReferralConfig {
@@ -43,6 +50,8 @@ export interface ReferralConfig {
   feeBps: number;
   tokenAccounts: Record<string, string>;
   required: boolean;
+  /** Filled at startup after the on-chain existence check. Empty until then. */
+  missingOnChain: string[];
 }
 
 export interface AppConfig {
@@ -50,7 +59,9 @@ export interface AppConfig {
   port: number;
   allowedHosts: string[];
   solanaRpcUrl: string;
+  dataCluster: SolanaCluster;
   rpcTimeoutMs: number;
+  corsOrigin?: string;
   jupiterApiBase: string;
   jupiterApiKey?: string;
   jupiterTimeoutMs: number;
@@ -58,6 +69,7 @@ export interface AppConfig {
   rugcheckTimeoutMs: number;
   referral: ReferralConfig;
   feeCheckMode: FeeCheckMode;
+  referralMissingMintMode: ReferralMissingMintMode;
   limits: {
     maxSlippageBps: number;
     maxTradeUsd?: number;
@@ -130,6 +142,26 @@ function parseCluster(value: string | undefined): { network: string; cluster: So
   );
 }
 
+function inferDataCluster(rpcUrl: string, explicit: string | undefined): SolanaCluster {
+  if (explicit == null) return /devnet/i.test(rpcUrl) ? "devnet" : "mainnet";
+  if (explicit === "mainnet" || explicit === "mainnet-beta") return "mainnet";
+  if (explicit === "devnet") return "devnet";
+  throw new ConfigError("SOLANA_CLUSTER must be mainnet or devnet");
+}
+
+function isLoopbackHost(host: string): boolean {
+  return host === "127.0.0.1" || host === "localhost" || host === "::1";
+}
+
+function parseTradeUsd(value: string | undefined, warnings: string[]): number | undefined {
+  if (value == null) return DEFAULT_MAX_TRADE_USD;
+  if (value === "0" || value.toLowerCase() === "off") {
+    warnings.push("WARNING: MAX_TRADE_USD is off. Quotes are not capped in USD.");
+    return undefined;
+  }
+  return parsePositive(value, "MAX_TRADE_USD");
+}
+
 function parsePositive(value: string | undefined, name: string): number | undefined {
   if (value == null) return undefined;
   const parsed = Number(value);
@@ -182,6 +214,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   if (feeCheckRaw !== "fail" && feeCheckRaw !== "warn") {
     throw new ConfigError("FEE_CHECK_MODE must be fail or warn");
   }
+  const missingMintRaw = optional(env, "REFERRAL_MISSING_MINT_MODE") ?? "requote";
+  if (missingMintRaw !== "requote" && missingMintRaw !== "fail" && missingMintRaw !== "warn") {
+    throw new ConfigError("REFERRAL_MISSING_MINT_MODE must be requote, fail, or warn");
+  }
 
   const priceGuardRaw = optional(env, "X402_PRICE_GUARD") ?? "warn";
   if (priceGuardRaw !== "warn" && priceGuardRaw !== "refuse") {
@@ -189,6 +225,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   }
 
   const cluster = parseCluster(optional(env, "X402_NETWORK"));
+  const solanaRpcUrl = optional(env, "SOLANA_RPC_URL") ?? SOLANA_MAINNET_RPC;
+  const dataCluster = inferDataCluster(solanaRpcUrl, optional(env, "SOLANA_CLUSTER"));
+  const x402RpcUrl = optional(env, "X402_RPC_URL") ?? (cluster.cluster === "devnet" ? SOLANA_DEVNET_RPC : SOLANA_MAINNET_RPC);
+  if (x402RpcUrl === solanaRpcUrl && cluster.cluster !== dataCluster) {
+    warnings.push(
+      `WARNING: X402_RPC_URL and SOLANA_RPC_URL are both ${x402RpcUrl}, but the payment network is ${cluster.cluster} and the data cluster is ${dataCluster}. Payment blockhashes must come from the payment cluster.`,
+    );
+  }
   const payToRaw = optional(env, "X402_PAY_TO");
   const payTo = payToRaw ? parsePubkey(payToRaw, "X402_PAY_TO") : undefined;
   const cdpConfigured = Boolean(optional(env, "CDP_API_KEY_ID") && optional(env, "CDP_API_KEY_SECRET"));
@@ -212,33 +256,55 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   if (maxInputRaw != null && !/^[0-9]+$/.test(maxInputRaw)) {
     throw new ConfigError("MAX_INPUT_AMOUNT must be an integer token amount in base units");
   }
+  const maxTradeUsd = parseTradeUsd(optional(env, "MAX_TRADE_USD"), warnings);
+  if (maxInputRaw == null && maxTradeUsd == null) {
+    warnings.push(
+      "WARNING: no trade size guard is set. MAX_TRADE_USD is off and MAX_INPUT_AMOUNT is unset. Quotes of any size will be returned.",
+    );
+  } else if (maxInputRaw == null) {
+    warnings.push(
+      `WARNING: MAX_INPUT_AMOUNT is unset. Trade size is capped only by MAX_TRADE_USD (${maxTradeUsd}). A missing Jupiter price refuses the trade.`,
+    );
+  }
 
   const allowedHosts = (optional(env, "ADVAN_ALLOWED_HOSTS") ?? "")
     .split(",")
     .map((host) => host.trim())
     .filter((host) => host.length > 0);
+  const host = optional(env, "HOST") ?? "127.0.0.1";
+  if (!isLoopbackHost(host) && allowedHosts.length === 0) {
+    warnings.push(
+      `WARNING: HOST is ${host} and ADVAN_ALLOWED_HOSTS is empty, so DNS rebinding protection is off. Set ADVAN_ALLOWED_HOSTS or bind 127.0.0.1.`,
+    );
+  }
+  const corsRaw = optional(env, "CORS_ORIGIN");
+  const corsOrigin = corsRaw == null ? "*" : corsRaw === "off" || corsRaw === "false" ? undefined : corsRaw;
 
   return {
-    host: optional(env, "HOST") ?? "0.0.0.0",
+    host,
     port: parseIntInRange(optional(env, "PORT"), 8787, "PORT", 1, 65535),
     allowedHosts,
-    solanaRpcUrl: optional(env, "SOLANA_RPC_URL") ?? "https://api.mainnet-beta.solana.com",
+    solanaRpcUrl,
+    dataCluster,
     rpcTimeoutMs: parseIntInRange(optional(env, "SOLANA_RPC_TIMEOUT_MS"), 15_000, "SOLANA_RPC_TIMEOUT_MS", 1000, 120_000),
     jupiterApiBase: (optional(env, "JUPITER_API_BASE") ?? "https://api.jup.ag").replace(/\/+$/, ""),
     jupiterApiKey: optional(env, "JUPITER_API_KEY"),
     jupiterTimeoutMs: parseIntInRange(optional(env, "JUPITER_TIMEOUT_MS"), 20_000, "JUPITER_TIMEOUT_MS", 1000, 120_000),
     rugcheckBaseUrl: (optional(env, "RUGCHECK_BASE_URL") ?? "https://api.rugcheck.xyz").replace(/\/+$/, ""),
     rugcheckTimeoutMs: parseIntInRange(optional(env, "RUGCHECK_TIMEOUT_MS"), 4_000, "RUGCHECK_TIMEOUT_MS", 500, 30_000),
+    corsOrigin,
     referral: {
       account: referralAccount,
       feeBps,
       tokenAccounts,
       required: referralRequired,
+      missingOnChain: [],
     },
     feeCheckMode: feeCheckRaw,
+    referralMissingMintMode: missingMintRaw,
     limits: {
       maxSlippageBps: parseIntInRange(optional(env, "MAX_SLIPPAGE_BPS"), 300, "MAX_SLIPPAGE_BPS", 0, 10_000),
-      maxTradeUsd: parsePositive(optional(env, "MAX_TRADE_USD"), "MAX_TRADE_USD"),
+      maxTradeUsd,
       maxInputAmount: maxInputRaw != null ? BigInt(maxInputRaw) : undefined,
       maxPriceImpactPct: parsePositive(optional(env, "MAX_PRICE_IMPACT_PCT"), "MAX_PRICE_IMPACT_PCT") ?? 5,
     },
@@ -268,6 +334,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
         120_000,
       ),
       required: parseBool(optional(env, "X402_REQUIRED"), false, "X402_REQUIRED"),
+      rpcUrl: x402RpcUrl,
     },
     usageLogPath: optional(env, "USAGE_LOG_PATH") ?? "./logs/usage.jsonl",
     usageLogStdout: parseBool(optional(env, "USAGE_LOG_STDOUT"), false, "USAGE_LOG_STDOUT"),

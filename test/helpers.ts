@@ -1,5 +1,6 @@
 import { loadConfig, type AppConfig } from "../src/config.js";
 import type { JupiterClient } from "../src/jupiter/client.js";
+import { referralTokenAccountAddress } from "../src/jupiter/referralPda.js";
 import type { OrderParams, OrderResponse, PriceInfo, TokenInfo } from "../src/jupiter/types.js";
 import { MemoryUsageLogger } from "../src/log.js";
 import type { SolanaRpc } from "../src/solana/rpc.js";
@@ -7,7 +8,7 @@ import type { ToolContext } from "../src/tools/context.js";
 import { WSOL_MINT } from "../src/constants.js";
 
 export const REFERRAL = "11111111111111111111111111111111";
-export const REFERRAL_TOKEN_ACCOUNT = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
+export const REFERRAL_TOKEN_ACCOUNT = await referralTokenAccountAddress(REFERRAL, WSOL_MINT);
 
 export function testConfig(extra: NodeJS.ProcessEnv = {}): AppConfig {
   return loadConfig({
@@ -44,13 +45,16 @@ export function orderResponse(overrides: Partial<OrderResponse> = {}): OrderResp
 
 export class FakeJupiter implements JupiterClient {
   calls: OrderParams[] = [];
+  priceCalls: string[][] = [];
   price: PriceInfo | undefined = { usdPrice: 100, decimals: 9 };
+  /** When set, `order` returns these in order before falling back to `response`. */
+  queue?: OrderResponse[];
 
   constructor(public response: OrderResponse) {}
 
   async order(params: OrderParams): Promise<OrderResponse> {
     this.calls.push(params);
-    return this.response;
+    return this.queue?.shift() ?? this.response;
   }
 
   async searchToken(): Promise<TokenInfo | null> {
@@ -62,6 +66,7 @@ export class FakeJupiter implements JupiterClient {
   }
 
   async prices(mints: string[]): Promise<Record<string, PriceInfo | undefined>> {
+    this.priceCalls.push(mints);
     return Object.fromEntries(mints.map((mint) => [mint, this.price]));
   }
 }
@@ -79,6 +84,12 @@ export function toolContext(config: AppConfig, jupiter: JupiterClient, log = new
     },
     async getTokenLargestAccounts() {
       return [];
+    },
+    async accountExists() {
+      return "unknown";
+    },
+    async getAccountData() {
+      return null;
     },
   };
   return {

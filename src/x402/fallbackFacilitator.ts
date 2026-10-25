@@ -77,71 +77,149 @@ export function supportsExactV2(supported: SupportedResponse, network: string): 
 
 export class FallbackFacilitatorClient implements FacilitatorClient {
   lastFacilitator: FacilitatorName | "none" = "none";
-  /** Facilitator whose `/supported` payload was returned. Payment requirements use that fee payer. */
+  /** Facilitator whose `/supported` payload was returned. New payment requirements use that fee payer. */
   active: FacilitatorName = "cdp";
+  private readonly feePayers = new Map<FacilitatorName, string>();
+  private readonly down = new Set<FacilitatorName>();
 
   constructor(
     private readonly primary: FacilitatorClient | null,
     private readonly fallback: FacilitatorClient,
     private readonly network: string,
     private readonly onFailover?: (event: FailoverEvent) => void,
+    /** Called after `active` moves to the other facilitator so requirements can be rebuilt. */
+    private readonly onActiveChange?: () => Promise<void>,
   ) {
     if (!primary) this.active = "payai";
   }
 
   async getSupported(): Promise<SupportedResponse> {
-    if (this.primary) {
+    if (this.primary && this.active === "cdp" && !this.down.has("cdp")) {
       try {
         const supported = await this.primary.getSupported();
         if (supportsExactV2(supported, this.network)) {
+          this.remember("cdp", supported);
           this.active = "cdp";
           this.lastFacilitator = "cdp";
+          await this.learnFeePayer("payai");
           return supported;
         }
         this.note("supported", "cdp omitted exact v2 for the configured network");
+        this.down.add("cdp");
       } catch (error) {
         if (!shouldFailover("supported", error)) throw error;
         this.note("supported", errorText(error));
+        this.down.add("cdp");
       }
     }
     this.active = "payai";
     this.lastFacilitator = "payai";
-    return this.fallback.getSupported();
+    const supported = await this.fallback.getSupported();
+    this.remember("payai", supported);
+    return supported;
   }
 
   async verify(paymentPayload: PaymentPayload, paymentRequirements: PaymentRequirements): Promise<VerifyResponse> {
-    return this.call("verify", () => this.primary!.verify(paymentPayload, paymentRequirements), () =>
-      this.fallback.verify(paymentPayload, paymentRequirements),
-    );
+    return this.dispatch("verify", paymentPayload, paymentRequirements);
   }
 
   async settle(paymentPayload: PaymentPayload, paymentRequirements: PaymentRequirements): Promise<SettleResponse> {
-    return this.call("settle", () => this.primary!.settle(paymentPayload, paymentRequirements), () =>
-      this.fallback.settle(paymentPayload, paymentRequirements),
-    );
+    return this.dispatch("settle", paymentPayload, paymentRequirements);
   }
 
-  private async call<T>(
+  /**
+   * Verify and settle go to the facilitator that advertised `requirements.extra.feePayer`.
+   * The other facilitator cannot co-sign or settle that transaction. A failover-eligible
+   * failure marks CDP down and rebuilds later requirements around PayAI.
+   */
+  private async dispatch<T>(
     operation: "verify" | "settle",
-    primary: () => Promise<T>,
-    fallback: () => Promise<T>,
+    paymentPayload: PaymentPayload,
+    paymentRequirements: PaymentRequirements,
   ): Promise<T> {
-    if (this.primary && this.active === "cdp") {
-      try {
-        this.lastFacilitator = "cdp";
-        return await primary();
-      } catch (error) {
-        if (!shouldFailover(operation, error)) throw error;
+    const name = await this.facilitatorFor(paymentRequirements);
+    try {
+      this.lastFacilitator = name;
+      return await this.invoke<T>(name, operation, paymentPayload, paymentRequirements);
+    } catch (error) {
+      if (name === "cdp" && this.primary && shouldFailover(operation, error)) {
         this.note(operation, errorText(error));
+        this.down.add("cdp");
+        if (this.active === "cdp") {
+          this.active = "payai";
+          try {
+            await this.onActiveChange?.();
+          } catch (hookError) {
+            const message = hookError instanceof Error ? hookError.message : "refresh failed";
+            process.stderr.write(`advan: facilitator refresh failed: ${message}\n`);
+          }
+        }
       }
+      throw error;
     }
-    this.lastFacilitator = "payai";
-    return fallback();
+  }
+
+  private async facilitatorFor(requirements: PaymentRequirements): Promise<FacilitatorName> {
+    const feePayer = feePayerOf(requirements);
+    if (!feePayer) return this.active === "cdp" && this.primary && !this.down.has("cdp") ? "cdp" : "payai";
+    const known = this.ownerOf(feePayer);
+    if (known) return known;
+    if (!this.feePayers.has("payai")) await this.learnFeePayer("payai");
+    return this.ownerOf(feePayer) ?? this.active;
+  }
+
+  private ownerOf(feePayer: string): FacilitatorName | undefined {
+    for (const [name, payer] of this.feePayers) {
+      if (payer === feePayer) return name;
+    }
+    return undefined;
+  }
+
+  private async invoke<T>(
+    name: FacilitatorName,
+    operation: "verify" | "settle",
+    paymentPayload: PaymentPayload,
+    paymentRequirements: PaymentRequirements,
+  ): Promise<T> {
+    const client = name === "cdp" ? this.primary : this.fallback;
+    if (!client) throw new Error("CDP facilitator is not configured");
+    const result = await client[operation](paymentPayload, paymentRequirements);
+    return result as T;
+  }
+
+  private async learnFeePayer(name: FacilitatorName): Promise<void> {
+    if (name === "cdp" && !this.primary) return;
+    try {
+      const client = name === "cdp" ? this.primary : this.fallback;
+      if (!client) return;
+      const supported = await client.getSupported();
+      if (supportsExactV2(supported, this.network)) this.remember(name, supported);
+    } catch {
+      // The fee payer is learned again on the next successful /supported.
+    }
+  }
+
+  private remember(name: FacilitatorName, supported: SupportedResponse): void {
+    const payer = feePayerFromSupported(supported, this.network);
+    if (payer) this.feePayers.set(name, payer);
   }
 
   private note(operation: FacilitatorOperation, error: string): void {
     this.onFailover?.({ operation, from: "cdp", error });
   }
+}
+
+function feePayerOf(requirements: PaymentRequirements): string | undefined {
+  const value = requirements.extra?.feePayer;
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function feePayerFromSupported(supported: SupportedResponse, network: string): string | undefined {
+  const kind = supported.kinds.find(
+    (item) => item.scheme === "exact" && item.network === network && item.x402Version === 2,
+  );
+  const extra = kind?.extra as { feePayer?: unknown } | undefined;
+  return typeof extra?.feePayer === "string" ? extra.feePayer : undefined;
 }
 
 function errorText(error: unknown): string {

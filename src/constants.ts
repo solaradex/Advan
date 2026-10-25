@@ -15,6 +15,15 @@ export const TOKEN_2022_PROGRAM_ID = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuE
 /** Jupiter Ultra / Swap referral project. From the referral program docs. */
 export const JUPITER_REFERRAL_PROJECT = "DkiqsTrw1u1bYFumumC7sCG2S8K25qc2vemJFHyW2wJc";
 
+/** Referral program that owns `referral_ata` PDAs. From `@jup-ag/referral-sdk`. */
+export const JUPITER_REFERRAL_PROGRAM = "REFER4ZgmyYx9c6He5XfaTMiGfdLwRnkV4RPp9t9iF3";
+
+export const SOLANA_MAINNET_RPC = "https://api.mainnet-beta.solana.com";
+export const SOLANA_DEVNET_RPC = "https://api.devnet.solana.com";
+
+/** Default USD notional cap when MAX_TRADE_USD is unset. `off` disables it. */
+export const DEFAULT_MAX_TRADE_USD = 1000;
+
 export const SOLANA_MAINNET_CAIP = "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp";
 export const SOLANA_DEVNET_CAIP = "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1";
 

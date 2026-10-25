@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { WSOL_MINT, USDC_MAINNET_MINT } from "../src/constants.js";
 import { bpsOfAmount, evaluateOrderFees, integratorNetBps } from "../src/jupiter/fees.js";
+import { referralTokenAccountAddress } from "../src/jupiter/referralPda.js";
 import { orderResponse, REFERRAL, REFERRAL_TOKEN_ACCOUNT } from "./helpers.js";
 
 const referral = {
@@ -10,8 +11,8 @@ const referral = {
 };
 
 describe("fee assertion", () => {
-  it("accepts an exact referral fee with a configured fee mint", () => {
-    const check = evaluateOrderFees(orderResponse(), referral);
+  it("accepts an exact referral fee with a configured fee mint", async () => {
+    const check = await evaluateOrderFees(orderResponse(), referral);
     expect(check.ok).toBe(true);
     expect(check.skipped).toBe(false);
     expect(check.referralTokenAccount).toBe(REFERRAL_TOKEN_ACCOUNT);
@@ -20,15 +21,15 @@ describe("fee assertion", () => {
     expect(integratorNetBps(50)).toBe(40);
   });
 
-  it("allows gasless orders to exceed the configured fee and rejects a shortfall", () => {
-    expect(evaluateOrderFees(orderResponse({ gasless: true, feeBps: 57 }), referral).ok).toBe(true);
-    const short = evaluateOrderFees(orderResponse({ gasless: true, feeBps: 49 }), referral);
+  it("allows gasless orders to exceed the configured fee and rejects a shortfall", async () => {
+    expect((await evaluateOrderFees(orderResponse({ gasless: true, feeBps: 57 }), referral)).ok).toBe(true);
+    const short = await evaluateOrderFees(orderResponse({ gasless: true, feeBps: 49 }), referral);
     expect(short.ok).toBe(false);
     expect(short.failures.join(" ")).toMatch(/gasless feeBps 49/);
   });
 
-  it("fails closed when the fee was dropped to the platform default", () => {
-    const dropped = evaluateOrderFees(
+  it("fails closed when the fee was dropped to the platform default", async () => {
+    const dropped = await evaluateOrderFees(
       orderResponse({ feeBps: 2, referralAccount: null, platformFee: { feeBps: 2, feeMint: WSOL_MINT } }),
       referral,
     );
@@ -37,14 +38,14 @@ describe("fee assertion", () => {
     expect(dropped.failures.some((failure) => failure.includes("referralAccount mismatch"))).toBe(true);
   });
 
-  it("fails when the fee mint has no referral token account", () => {
-    const check = evaluateOrderFees(orderResponse({ feeMint: USDC_MAINNET_MINT, inputMint: USDC_MAINNET_MINT }), referral);
+  it("fails when the fee mint has no referral token account", async () => {
+    const check = await evaluateOrderFees(orderResponse({ feeMint: USDC_MAINNET_MINT, inputMint: USDC_MAINNET_MINT }), referral);
     expect(check.ok).toBe(false);
     expect(check.failures.join(" ")).toMatch(/no referral token account/);
   });
 
-  it("skips the assertion when no referral account is configured", () => {
-    const check = evaluateOrderFees(orderResponse({ feeBps: 2, referralAccount: null }), {
+  it("skips the assertion when no referral account is configured", async () => {
+    const check = await evaluateOrderFees(orderResponse({ feeBps: 2, referralAccount: null }), {
       feeBps: 50,
       tokenAccounts: {},
     });
@@ -52,7 +53,19 @@ describe("fee assertion", () => {
     expect(check.skipped).toBe(true);
   });
 
-  it("rejects a non-gasless fee that is higher than configured", () => {
-    expect(evaluateOrderFees(orderResponse({ feeBps: 51 }), referral).ok).toBe(false);
+  it("rejects a non-gasless fee that is higher than configured", async () => {
+    expect((await evaluateOrderFees(orderResponse({ feeBps: 51 }), referral)).ok).toBe(false);
+  });
+
+  it("rejects a referral token account that belongs to a different mint", async () => {
+    const usdcPda = await referralTokenAccountAddress(REFERRAL, USDC_MAINNET_MINT);
+    const swapped = await evaluateOrderFees(orderResponse(), {
+      account: REFERRAL,
+      feeBps: 50,
+      tokenAccounts: { [WSOL_MINT]: usdcPda },
+    });
+    expect(swapped.ok).toBe(false);
+    expect(swapped.failures.join(" ")).toMatch(/does not match referral PDA/);
+    expect(usdcPda).not.toBe(REFERRAL_TOKEN_ACCOUNT);
   });
 });

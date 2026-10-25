@@ -1,13 +1,20 @@
 import { appendFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
-export type UsageKind = "tool" | "fee_check_failure" | "x402_settlement" | "facilitator_failover";
+export type UsageKind =
+  | "tool"
+  | "fee_check_failure"
+  | "referral_requote"
+  | "x402_settlement"
+  | "x402_verification"
+  | "facilitator_failover";
 
 export type PaymentStatus =
   | "free"
   | "verified"
   | "settled"
   | "settlement_failed"
+  | "verification_failed"
   | "unconfigured"
   | "not_applicable";
 

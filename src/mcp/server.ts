@@ -55,20 +55,10 @@ export function createMcpServer(ctx: ToolContext, x402: X402Runtime | null): Mcp
   const portfolioDescription = `Paid wallet portfolio (${price} USDC via x402 exact). SOL plus SPL Token and Token-2022 balances, priced with Jupiter Price V3.`;
 
   if (x402) {
-    const paidRisk = createPaymentWrapper(x402.resourceServer, {
-      accepts: x402.accepts,
-      extensions: x402.discovery.tokenRisk,
-      resource: { description: riskDescription, mimeType: "application/json" },
-    });
-    const paidPortfolio = createPaymentWrapper(x402.resourceServer, {
-      accepts: x402.accepts,
-      extensions: x402.discovery.portfolio,
-      resource: { description: portfolioDescription, mimeType: "application/json" },
-    });
     server.registerTool(
       "token_risk",
       { title: "Token risk", description: riskDescription, inputSchema: tokenRiskShape },
-      paidRisk(async (args) => {
+      withFreshPayment(x402, riskDescription, x402.discovery.tokenRisk, async (args) => {
         try {
           return ok(await tokenRisk(args, paidContext(ctx, x402, "verified")));
         } catch (error) {
@@ -79,7 +69,7 @@ export function createMcpServer(ctx: ToolContext, x402: X402Runtime | null): Mcp
     server.registerTool(
       "wallet_portfolio",
       { title: "Wallet portfolio", description: portfolioDescription, inputSchema: portfolioShape },
-      paidPortfolio(async (args) => {
+      withFreshPayment(x402, portfolioDescription, x402.discovery.portfolio, async (args) => {
         try {
           return ok(await walletPortfolio(args, paidContext(ctx, x402, "verified")));
         } catch (error) {
@@ -101,6 +91,32 @@ export function createMcpServer(ctx: ToolContext, x402: X402Runtime | null): Mcp
   }
 
   return server;
+}
+
+/**
+ * Payment requirements, including the Solana blockhash, are built on every call.
+ * A blockhash captured at process start expires in about 60–90 seconds and then
+ * every paid MCP call fails simulation.
+ */
+export function withFreshPayment(
+  x402: Pick<X402Runtime, "resourceServer" | "buildAccepts">,
+  description: string,
+  extensions: Record<string, unknown>,
+  handler: (args: Record<string, unknown>) => Promise<{
+    content: { type: "text"; text: string }[];
+    structuredContent?: Record<string, unknown>;
+    isError?: boolean;
+  }>,
+) {
+  return async (args: Record<string, unknown>, extra?: { _meta?: Record<string, unknown> }) => {
+    const accepts = await x402.buildAccepts();
+    const wrapped = createPaymentWrapper(x402.resourceServer, {
+      accepts,
+      extensions,
+      resource: { description, mimeType: "application/json" },
+    });
+    return wrapped(handler)(args, extra);
+  };
 }
 
 function paidContext(ctx: ToolContext, x402: X402Runtime | null, paymentStatus: ToolContext["paymentStatus"]): ToolContext {

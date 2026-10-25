@@ -12,14 +12,24 @@ export async function walletPortfolio(input: unknown, ctx: ToolContext) {
       ctx.rpc.getTokenAccountsByOwner(owner, TOKEN_2022_PROGRAM_ID),
     ]);
     const holdings = [...spl, ...token2022].filter((row) => row.amount !== "0");
-    const mints = [WSOL_MINT, ...holdings.map((row) => row.mint)];
-    const prices = await ctx.jupiter.prices(mints);
+    // Native SOL is priced from mainnet wSOL even on devnet: devnet has no SOL/USD book.
+    // The request is separate so a batch of unlisted devnet mints cannot drop the SOL price.
+    const solQuote = await ctx.jupiter.prices([WSOL_MINT]);
+    const tokenMints = [...new Set(holdings.map((row) => row.mint).filter((mint) => mint !== WSOL_MINT))];
+    const prices = tokenMints.length > 0 ? await ctx.jupiter.prices(tokenMints) : {};
+    prices[WSOL_MINT] = solQuote[WSOL_MINT];
     const meta = new Map<string, { symbol?: string; name?: string }>();
     const unique = [...new Set(holdings.map((row) => row.mint))];
     const listed = await ctx.jupiter.searchTokens(unique).catch(() => []);
     for (const token of listed) meta.set(token.id, { symbol: token.symbol, name: token.name });
-    const solPrice = prices[WSOL_MINT]?.usdPrice;
+    const solPrice = solQuote[WSOL_MINT]?.usdPrice ?? null;
     const solUsd = solPrice == null ? null : (Number(lamports) / 1_000_000_000) * solPrice;
+    const priceSource =
+      solPrice == null
+        ? null
+        : ctx.config.dataCluster === "devnet"
+          ? "jupiter-price-v3:wSOL (mainnet market; devnet has no SOL/USD book)"
+          : "jupiter-price-v3:wSOL";
     const tokens = holdings.map((row) => {
       const price = prices[row.mint]?.usdPrice;
       const usdValue = price == null ? null : (Number(row.amount) / 10 ** row.decimals) * price;
@@ -41,11 +51,13 @@ export async function walletPortfolio(input: unknown, ctx: ToolContext) {
     const tokenUsd = tokens.reduce((sum, row) => sum + (row.usdValue ?? 0), 0);
     return {
       owner,
+      cluster: ctx.config.dataCluster,
       sol: {
         lamports: lamports.toString(),
         uiAmount: Number(lamports) / 1_000_000_000,
-        usdPrice: solPrice ?? null,
+        usdPrice: solPrice,
         usdValue: solUsd,
+        priceSource,
       },
       tokens,
       totalUsd: (solUsd ?? 0) + tokenUsd,

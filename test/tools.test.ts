@@ -2,9 +2,18 @@ import { describe, expect, it } from "vitest";
 import { WSOL_MINT, USDC_MAINNET_MINT } from "../src/constants.js";
 import { FeeCheckError, GuardError } from "../src/errors.js";
 import { MemoryUsageLogger } from "../src/log.js";
+import { encodeUnsignedTransaction } from "../src/solana/unsignedTx.js";
 import { buildSwapTx } from "../src/tools/buildSwap.js";
 import { getQuote } from "../src/tools/getQuote.js";
-import { FakeJupiter, orderResponse, REFERRAL, testConfig, toolContext } from "./helpers.js";
+import { walletPortfolio } from "../src/tools/portfolio.js";
+import { FakeJupiter, orderResponse, REFERRAL, REFERRAL_TOKEN_ACCOUNT, testConfig, toolContext } from "./helpers.js";
+
+const unsigned = encodeUnsignedTransaction({ signers: [REFERRAL], writable: [REFERRAL_TOKEN_ACCOUNT] });
+const marketMaker = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
+const jupiterzTx = encodeUnsignedTransaction({
+  signers: [REFERRAL, marketMaker],
+  writable: [REFERRAL_TOKEN_ACCOUNT],
+});
 
 const quoteInput = {
   inputMint: WSOL_MINT,
@@ -49,7 +58,7 @@ describe("swap tools", () => {
   });
 
   it("fails closed on a fee-check miss and can warn instead", async () => {
-    const dropped = orderResponse({ feeBps: 2, referralAccount: null, transaction: "AQID" });
+    const dropped = orderResponse({ feeBps: 2, referralAccount: null, transaction: unsigned });
     const jupiter = new FakeJupiter(dropped);
     const log = new MemoryUsageLogger();
     await expect(buildSwapTx({ ...quoteInput, taker: REFERRAL }, toolContext(testConfig(), jupiter, log))).rejects.toBeInstanceOf(
@@ -63,32 +72,85 @@ describe("swap tools", () => {
       { ...quoteInput, taker: REFERRAL },
       toolContext(testConfig({ FEE_CHECK_MODE: "warn" }), new FakeJupiter(dropped), warnLog),
     );
-    expect(warned.transaction).toBe("AQID");
+    expect(warned.transaction).toBe(unsigned);
     expect(warned.feeCheck.ok).toBe(false);
     expect(warnLog.events[0]?.kind).toBe("fee_check_failure");
     expect(warnLog.events[0]?.success).toBe(true);
   });
 
   it("excludes jupiterz for self-broadcast and rejects a foreign fee payer", async () => {
-    const jupiter = new FakeJupiter(orderResponse({ transaction: "AQID", signatureFeePayer: REFERRAL }));
+    const jupiter = new FakeJupiter(orderResponse({ transaction: unsigned, signatureFeePayer: REFERRAL }));
     const ctx = toolContext(testConfig(), jupiter);
     const built = await buildSwapTx({ ...quoteInput, taker: REFERRAL, selfBroadcast: true }, ctx);
     expect(jupiter.calls[0]?.excludeRouters).toBe("jupiterz");
     expect(built.submit.method).toBe("self");
     expect(built.signing.status).toBe("unsigned");
+    expect(built.signing.feePayer).toBe(REFERRAL);
+    expect(built.signing.signers).toEqual([REFERRAL]);
 
     const foreign = new FakeJupiter(
-      orderResponse({ transaction: "AQID", signatureFeePayer: USDC_MAINNET_MINT, router: "metis" }),
+      orderResponse({ transaction: unsigned, signatureFeePayer: USDC_MAINNET_MINT, router: "metis" }),
     );
     await expect(
       buildSwapTx({ ...quoteInput, taker: REFERRAL, selfBroadcast: true }, toolContext(testConfig(), foreign)),
     ).rejects.toThrow(/signatureFeePayer/);
 
-    const rfq = new FakeJupiter(orderResponse({ transaction: "AQID", router: "jupiterz", swapType: "rfq" }));
+    const rfq = new FakeJupiter(orderResponse({ transaction: jupiterzTx, router: "jupiterz", swapType: "rfq" }));
     const managed = await buildSwapTx({ ...quoteInput, taker: REFERRAL }, toolContext(testConfig(), rfq));
     expect(rfq.calls[0]?.excludeRouters).toBeUndefined();
     expect(managed.submit.method).toBe("jupiter");
     expect(managed.submit.coSignRequired).toBe(true);
+    expect(managed.signing.signers).toEqual([REFERRAL, marketMaker]);
+  });
+
+  it("re-quotes without a referral when the fee mint has no token account", async () => {
+    const bad = orderResponse({
+      feeBps: 2,
+      referralAccount: null,
+      feeMint: USDC_MAINNET_MINT,
+      inputMint: WSOL_MINT,
+    });
+    const good = orderResponse({ feeBps: 2, referralAccount: null, transaction: null });
+    const jupiter = new FakeJupiter(good);
+    jupiter.queue = [bad, good];
+    const log = new MemoryUsageLogger();
+    const quote = await getQuote(quoteInput, toolContext(testConfig(), jupiter, log));
+    expect(jupiter.calls).toHaveLength(2);
+    expect(jupiter.calls[0]?.referralAccount).toBe(REFERRAL);
+    expect(jupiter.calls[1]?.referralAccount).toBeUndefined();
+    expect(quote.feeCheck.omittedReferral).toBe(true);
+    expect(quote.feeCheck.ok).toBe(true);
+    expect(log.events.some((event) => event.kind === "referral_requote")).toBe(true);
+  });
+
+  it("does not re-quote when the configured account is the wrong PDA", async () => {
+    const jupiter = new FakeJupiter(orderResponse());
+    const swapped = testConfig({ JUPITER_REFERRAL_TOKEN_ACCOUNT_SOL: USDC_MAINNET_MINT });
+    await expect(getQuote(quoteInput, toolContext(swapped, jupiter))).rejects.toBeInstanceOf(FeeCheckError);
+    expect(jupiter.calls).toHaveLength(1);
+  });
+
+  it("rejects a signed transaction and one that omits the referral account", async () => {
+    const signed = Buffer.from(unsigned, "base64");
+    signed[1] = 1;
+    const jupiter = new FakeJupiter(orderResponse({ transaction: signed.toString("base64") }));
+    await expect(buildSwapTx({ ...quoteInput, taker: REFERRAL }, toolContext(testConfig(), jupiter))).rejects.toThrow(/not unsigned/);
+
+    const missing = encodeUnsignedTransaction({ signers: [REFERRAL] });
+    const omitted = new FakeJupiter(orderResponse({ transaction: missing }));
+    await expect(buildSwapTx({ ...quoteInput, taker: REFERRAL }, toolContext(testConfig(), omitted))).rejects.toThrow(
+      /not in the transaction/,
+    );
+  });
+
+  it("prices native SOL from wSOL on devnet", async () => {
+    const jupiter = new FakeJupiter(orderResponse());
+    const ctx = toolContext(testConfig({ SOLANA_RPC_URL: "https://api.devnet.solana.com", MAX_TRADE_USD: "off" }), jupiter);
+    const portfolio = await walletPortfolio({ owner: REFERRAL }, ctx);
+    expect(ctx.config.dataCluster).toBe("devnet");
+    expect(jupiter.priceCalls[0]).toEqual([WSOL_MINT]);
+    expect(portfolio.sol.priceSource).toMatch(/devnet/);
+    expect(portfolio.cluster).toBe("devnet");
   });
 
   it("rejects invalid tool input before calling Jupiter", async () => {
