@@ -25,7 +25,7 @@
     "node": ">=20"
   },
   "bin": {
-    "advan-mcp": "./dist/index.js"
+    "advan-mcp": "dist/index.js"
   },
   "files": [
     "dist",
@@ -34,6 +34,7 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
+    "postbuild": "node -e \"require('node:fs').chmodSync('dist/index.js', 0o755)\"",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint src test",
     "test": "vitest run",

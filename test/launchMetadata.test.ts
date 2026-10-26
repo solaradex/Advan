@@ -82,6 +82,7 @@ describe("launch metadata", () => {
       homepage: string;
       bugs: { url: string };
       keywords: string[];
+      bin: Record<string, string>;
     };
     const server = JSON.parse(readFileSync("server.json", "utf8")) as {
       $schema: string;
@@ -108,6 +109,7 @@ describe("launch metadata", () => {
     expect(pkg.bugs.url).toBe("https://github.com/solaradex/Advan/issues");
     expect(pkg.keywords).toEqual(["mcp", "solana", "jupiter", "x402", "ai-agents", "trading"]);
     expect(pkg.files).toEqual(["dist", "README.md", "LICENSE"]);
+    expect(pkg.bin).toEqual({ "advan-mcp": "dist/index.js" });
 
     expect(server.$schema).toBe("https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json");
     expect(server.name).toBe(pkg.mcpName);
