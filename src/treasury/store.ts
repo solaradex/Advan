@@ -1,7 +1,7 @@
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import type { TreasuryPolicy, TreasuryEvaluation } from "./policy.js";
+import type { TreasuryPolicy } from "./policy.js";
 
 export interface TreasuryApproval {
   id: string;
