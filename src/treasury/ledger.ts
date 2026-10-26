@@ -139,15 +139,18 @@ export class TreasuryLedger {
     return this.locked((data) => {
       const old = data.approvals[id];
       if (!old || old.status !== "pending") throw new Error("Approval not found or already decided");
-      if (Date.parse(old.expiresAt) <= Date.now()) {
-        data.approvals[id] = { ...old, status: "rejected", decidedAt: new Date().toISOString(), reason: "expired" };
+      const expired = Date.parse(old.expiresAt) <= Date.now();
+      const finalStatus = expired ? "rejected" : status;
+      const next: PersistentBoundApproval = {
+        ...old, status: finalStatus, decidedAt: new Date().toISOString(),
+        decidedBy: expired ? undefined : operatorId, reason: expired ? "expired" : reason,
+      };
+      if (expired) {
         const reservation = data.reservations[old.reservationId];
         if (reservation?.status === "reserved") data.reservations[reservation.id] = { ...reservation, status: "released", updatedAt: new Date().toISOString() };
-        throw new Error("Approval expired; exposure reservation released");
       }
-      const next: PersistentBoundApproval = { ...old, status, decidedAt: new Date().toISOString(), decidedBy: operatorId, reason };
       data.approvals[id] = next;
-      if (status === "rejected") {
+      if (finalStatus === "rejected" && !expired) {
         const reservation = data.reservations[old.reservationId];
         if (reservation?.status === "reserved") data.reservations[reservation.id] = { ...reservation, status: "released", updatedAt: new Date().toISOString() };
       }
