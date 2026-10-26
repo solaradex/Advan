@@ -1,6 +1,4 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { TreasuryApproval } from "./store.js";
-
 export interface BoundExecutionIntent {
   intentId: string;
   policyId: string;
