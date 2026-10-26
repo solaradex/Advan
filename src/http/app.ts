@@ -207,7 +207,7 @@ export function createApp(options: AppOptions): Express {
       if (ctx.config.usageLogPath !== "stdout") {
         const auditPath = `${ctx.config.usageLogPath}.treasury.jsonl`;
         mkdirSync(dirname(auditPath), { recursive: true });
-        appendFileSync(auditPath, `${JSON.stringify(event)}\\n`, { mode: 0o600 });
+        appendFileSync(auditPath, `${JSON.stringify(event)}\n`, { mode: 0o600 });
       }
       res.status(200).json(evaluation);
     } catch (error) {
