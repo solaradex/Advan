@@ -1,5 +1,3 @@
-import { appendFileSync, mkdirSync } from "node:fs";
-import { dirname } from "node:path";
 import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
 import { hostHeaderValidation } from "@modelcontextprotocol/sdk/server/middleware/hostHeaderValidation.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
