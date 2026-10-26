@@ -271,3 +271,14 @@ These are configuration, not hardcoded wallets:
 The first Treasury slice adds `POST /v1/treasury/evaluate` and `src/treasury/policy.ts`. It evaluates wallet/agent permissions, asset allow/deny lists, per-trade and projected daily/session exposure, slippage, price impact, and a weighted risk score, returning `allow`, `approval_required`, or `deny` with individual checks. Each evaluation is appended to `${USAGE_LOG_PATH}.treasury.jsonl` when file logging is configured. See [docs/TREASURY-MVP.md](docs/TREASURY-MVP.md) for the request schema and rollout limitations.
 
 **Important:** this is an evaluation-only foundation, not yet a production authorization boundary. Policies and risk inputs are submitted by the caller, there is no authentication or durable exposure reservation, and the result does not authorize signing/broadcasting. Do not expose the endpoint publicly or enable automatic execution until trusted policy storage, authentication, authoritative risk inputs, atomic exposure accounting, and approval identity are implemented. Existing swap tools remain non-custodial and unchanged.
+
+## Advan Treasury governance endpoints
+
+Treasury governance routes are disabled unless `TREASURY_API_TOKEN` is configured. Configure a long random bearer secret and optionally `TREASURY_STORE_PATH` (default `./data/treasury.json`) before using them. All Treasury endpoints require `Authorization: Bearer <token>`.
+
+- `PUT /v1/treasury/policies/:id` and `GET /v1/treasury/policies/:id` manage/read trusted policy records.
+- `POST /v1/treasury/evaluate` accepts `{"policyId":"...","intent":{...}}` and evaluates against the stored policy.
+- `GET /v1/treasury/approvals` lists pending and decided approval records.
+- `POST /v1/treasury/approvals/:id/decision` records an approval or rejection.
+
+See [docs/TREASURY-MVP.md](docs/TREASURY-MVP.md) for details. The current JSON file store is single-process only; approvals are governance records and do not trigger swaps. This is not yet a multi-replica production treasury: identity verification, atomic exposure reservations, trusted on-chain risk inputs, immutable quote binding, and execution reconciliation remain required.
