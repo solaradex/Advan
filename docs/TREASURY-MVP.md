@@ -35,3 +35,21 @@ An approval is a governance record only. It does not execute or authorize an arb
 4. Derive price impact, route and token risk from server-verified Jupiter/RPC data; do not trust agent-supplied risk values.
 5. Add idempotency keys, rate limiting, audit retention/rotation, tamper-evident audit storage, and multi-replica concurrency tests.
 6. Integrate execution only after the above controls are verified. This stage still does not sign or broadcast transactions.
+
+
+## Stage 3 — execution authorization primitives (in progress)
+
+The feature branch now includes `src/treasury/executionGuard.ts`, a pure authorization primitive that binds an intent to its policy ID, wallet, mints, amount, quote response, transaction-message digest, and expiry. It canonicalizes JSON before computing a SHA-256 intent digest, derives a transaction-message digest by decoding the Solana transaction, and checks approval status, matching verified approver identity, expiry, and exact digest equality before authorization.
+
+Tests in `test/treasury-execution-guard.test.ts` cover pending approvals, changed quote data, approver mismatch, expiry, malformed transaction input, and non-JSON values.
+
+**This is not yet wired into `build_swap_tx` or a transaction submission route.** The existing endpoint still returns unsigned transactions and the service still does not sign or broadcast. A caller must not treat these primitives as proof of authorization until the following work is complete:
+
+1. Store bound approvals and intent records transactionally, including one-time state transitions.
+2. Authenticate approvers through a real identity provider and enforce roles server-side.
+3. Decode the actual unsigned transaction and verify the fee payer, required signers, swap instructions, input/output mints, amounts, destination, and allowed programs against the approved intent. The digest must be calculated from the exact transaction message the wallet will sign.
+4. Re-fetch/validate quote expiry and trusted risk data immediately before returning an authorized transaction.
+5. Atomically reserve daily/session exposure before authorization, release on failed/expired intents, and reconcile completed swaps from confirmed chain data.
+6. Add idempotency, replay prevention, audit integrity controls, and tests against concurrent requests and transaction tampering.
+
+Until these controls are implemented and tested, Stage 3 remains development-only and must not be marketed as production-safe autonomous execution.
