@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { isClientErrorCode } from "./errors.js";
 import type { UsageEvent } from "./log.js";
 
 export interface UsageStats {
@@ -8,6 +9,9 @@ export interface UsageStats {
   callsByTool: Record<string, number>;
   errors: number;
   errorsByCode: Record<string, number>;
+  /** User/wallet failures such as insufficient_funds. Not included in errors. */
+  clientErrors: number;
+  clientErrorsByCode: Record<string, number>;
   feeCheckFailures: number;
   x402: {
     verified: number;
@@ -31,6 +35,7 @@ const NOTES = [
   "usdcAtomicReceived sums successful x402 settlements recorded in this log (USDC base units, 6 decimals).",
   "estimatedIntegratorFeeRawByMint sums 80% of the quoted fee (Jupiter keeps 20%). On-chain accrued fees are the referral token-account balances, not this estimate.",
   "failedVerifications counts x402 verify failures. referralRequotes counts orders that were priced again without a referral fee because the fee mint had no usable token account.",
+  "errors counts server failures. clientErrors counts user/wallet failures such as insufficient_funds and is not included in errors.",
 ];
 
 function isCall(event: UsageEvent): boolean {
@@ -41,10 +46,12 @@ export function summarizeUsage(events: UsageEvent[], now = new Date()): UsageSta
   const today = now.toISOString().slice(0, 10);
   const callsByTool: Record<string, number> = {};
   const errorsByCode: Record<string, number> = {};
+  const clientErrorsByCode: Record<string, number> = {};
   const estimated: Record<string, bigint> = {};
   let calls = 0;
   let callsToday = 0;
   let errors = 0;
+  let clientErrors = 0;
   let feeCheckFailures = 0;
   let verified = 0;
   let settled = 0;
@@ -63,9 +70,14 @@ export function summarizeUsage(events: UsageEvent[], now = new Date()): UsageSta
       const tool = event.tool ?? "unknown";
       callsByTool[tool] = (callsByTool[tool] ?? 0) + 1;
       if (!event.success) {
-        errors += 1;
         const code = event.errorCode ?? "error";
-        errorsByCode[code] = (errorsByCode[code] ?? 0) + 1;
+        if (isClientErrorCode(code)) {
+          clientErrors += 1;
+          clientErrorsByCode[code] = (clientErrorsByCode[code] ?? 0) + 1;
+        } else {
+          errors += 1;
+          errorsByCode[code] = (errorsByCode[code] ?? 0) + 1;
+        }
       }
       if (event.feeBps != null && event.feeBps > 0 && event.estimatedIntegratorFeeRaw && event.feeMint) {
         eventsWithFee += 1;
@@ -99,6 +111,8 @@ export function summarizeUsage(events: UsageEvent[], now = new Date()): UsageSta
     callsByTool,
     errors,
     errorsByCode,
+    clientErrors,
+    clientErrorsByCode,
     feeCheckFailures,
     x402: {
       verified,

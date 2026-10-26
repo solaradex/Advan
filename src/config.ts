@@ -87,6 +87,12 @@ export interface AppConfig {
   x402: X402Config;
   usageLogPath: string;
   usageLogStdout: boolean;
+  /**
+   * Public origin (https://advan.fly.dev). x402 resource URLs and Bazaar
+   * metadata use this instead of the request URL. Fly terminates TLS, so the
+   * request URL is http:// unless this is set.
+   */
+  publicBaseUrl?: string;
   warnings: string[];
 }
 
@@ -286,6 +292,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   }
   const corsRaw = optional(env, "CORS_ORIGIN");
   const corsOrigin = corsRaw == null ? "*" : corsRaw === "off" || corsRaw === "false" ? undefined : corsRaw;
+  const publicBaseUrl = parsePublicBaseUrl(optional(env, "PUBLIC_BASE_URL"));
 
   return {
     host,
@@ -354,6 +361,34 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     },
     usageLogPath: optional(env, "USAGE_LOG_PATH") ?? "./logs/usage.jsonl",
     usageLogStdout: parseBool(optional(env, "USAGE_LOG_STDOUT"), false, "USAGE_LOG_STDOUT"),
+    publicBaseUrl,
     warnings,
   };
+}
+
+/** Origin only, no trailing slash. `https://advan.fly.dev`. */
+export function parsePublicBaseUrl(value: string | undefined): string | undefined {
+  if (value == null) return undefined;
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new ConfigError("PUBLIC_BASE_URL must be an absolute http(s) URL");
+  }
+  if (url.protocol !== "https:" && url.protocol !== "http:") {
+    throw new ConfigError("PUBLIC_BASE_URL must be http or https");
+  }
+  if (url.username || url.password || url.search || url.hash) {
+    throw new ConfigError("PUBLIC_BASE_URL must not include credentials, a query, or a hash");
+  }
+  if (url.pathname !== "/" && url.pathname !== "") {
+    throw new ConfigError("PUBLIC_BASE_URL must be an origin without a path");
+  }
+  return url.origin;
+}
+
+export function publicResourceUrl(base: string | undefined, path: string): string | undefined {
+  if (!base) return undefined;
+  const suffix = path.startsWith("/") ? path : `/${path}`;
+  return `${base}${suffix}`;
 }

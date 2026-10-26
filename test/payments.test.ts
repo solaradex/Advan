@@ -101,7 +101,7 @@ describe("fresh MCP payment requirements", () => {
           price: "$0.01",
         }),
     };
-    const handler = withFreshPayment(x402, "token risk", {}, async () => ({
+    const handler = withFreshPayment(x402, { description: "token risk" }, {}, async () => ({
       content: [{ type: "text" as const, text: "ok" }],
     }));
 

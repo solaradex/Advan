@@ -50,10 +50,14 @@ describe("launch metadata", () => {
     expect(toml).toContain('source = "advan_data"');
     expect(toml).toContain('destination = "/data"');
     expect(toml).toContain('path = "/healthz"');
+    expect(toml).toContain('grace_period = "60s"');
+    expect(toml).not.toContain('grace_period = "120s"');
 
     const config = loadConfig(env);
     expect(config.host).toBe("0.0.0.0");
     expect(config.port).toBe(8787);
+    expect(config.allowedHosts).toEqual(["advan.fly.dev"]);
+    expect(config.publicBaseUrl).toBe("https://advan.fly.dev");
     expect(config.usageLogPath).toBe("/data/usage.jsonl");
     expect(config.x402.network).toBe("solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp");
     expect(config.x402.priceUsd).toBe(0.02);

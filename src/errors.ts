@@ -47,6 +47,20 @@ export class UpstreamError extends AdvanError {
   }
 }
 
+/** Taker wallet cannot fund the swap. Not an upstream outage. */
+export class InsufficientFundsError extends AdvanError {
+  constructor(message: string, details?: unknown) {
+    super(message, "insufficient_funds", 400, details);
+  }
+}
+
+const CLIENT_ERROR_CODES = new Set(["insufficient_funds"]);
+
+/** User/wallet failures. /stats counts these separately from server errors. */
+export function isClientErrorCode(code: string | undefined): boolean {
+  return code != null && CLIENT_ERROR_CODES.has(code);
+}
+
 export class PaymentsUnconfiguredError extends AdvanError {
   constructor() {
     super(

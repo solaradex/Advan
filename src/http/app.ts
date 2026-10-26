@@ -1,8 +1,10 @@
 import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
+import { hostHeaderValidation } from "@modelcontextprotocol/sdk/server/middleware/hostHeaderValidation.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { paymentMiddleware } from "@x402/express";
-import type { Express, NextFunction, Request, Response } from "express";
+import express, { type Express, type NextFunction, type Request, type RequestHandler, type Response } from "express";
 import type { Network } from "@x402/core/types";
+import { publicResourceUrl } from "../config.js";
 import { redactPaymentRequired } from "./paymentError.js";
 import { AdvanError, PaymentsUnconfiguredError, toAdvanError } from "../errors.js";
 import { readUsageEvents, summarizeUsage } from "../stats.js";
@@ -22,10 +24,24 @@ export interface AppOptions {
 
 export function createApp(options: AppOptions): Express {
   const { ctx, x402 } = options;
-  const app = createMcpExpressApp({
+  const loopback = isLoopbackHost(ctx.config.host);
+  // On a public bind, check hosts ourselves so GET /healthz stays open for Fly's
+  // private probe (its Host is the machine address, not advan.fly.dev).
+  const customHostCheck = !loopback && ctx.config.allowedHosts.length > 0;
+  // createMcpExpressApp warns, and skips protection, when allowedHosts is omitted
+  // on 0.0.0.0. Build the app here so /healthz can stay open without that warning.
+  const app = customHostCheck ? express() : createMcpExpressApp({
     host: ctx.config.host,
     allowedHosts: ctx.config.allowedHosts.length > 0 ? ctx.config.allowedHosts : undefined,
   });
+  if (customHostCheck) {
+    app.use(hostAllowList(ctx.config.allowedHosts, ["/healthz"]));
+    app.use(express.json());
+  }
+  if (ctx.config.publicBaseUrl) {
+    // One hop: Fly's proxy. req.protocol then follows X-Forwarded-Proto.
+    app.set("trust proxy", 1);
+  }
   app.disable("x-powered-by");
   // createMcpExpressApp already installs express.json(). A second parser throws
   // "stream is not readable" because the body has been consumed.
@@ -76,6 +92,7 @@ export function createApp(options: AppOptions): Express {
       paymentMiddleware(
         {
           "POST /v1/token_risk": {
+            resource: publicResourceUrl(ctx.config.publicBaseUrl, "/v1/token_risk"),
             accepts: {
               scheme: "exact",
               price: x402.priceLabel,
@@ -88,6 +105,7 @@ export function createApp(options: AppOptions): Express {
             unpaidResponseBody: () => unpaid("token_risk"),
           },
           "POST /v1/wallet_portfolio": {
+            resource: publicResourceUrl(ctx.config.publicBaseUrl, "/v1/wallet_portfolio"),
             accepts: {
               scheme: "exact",
               price: x402.priceLabel,
@@ -215,6 +233,23 @@ export function createApp(options: AppOptions): Express {
   });
 
   return app;
+}
+
+function isLoopbackHost(host: string): boolean {
+  return host === "127.0.0.1" || host === "localhost" || host === "::1";
+}
+
+/** Host allow-list that leaves liveness probes open. */
+export function hostAllowList(allowedHosts: string[], openPaths: readonly string[]): RequestHandler {
+  const check = hostHeaderValidation(allowedHosts);
+  const open = new Set(openPaths);
+  return (req, res, next) => {
+    if (open.has(req.path)) {
+      next();
+      return;
+    }
+    check(req, res, next);
+  };
 }
 
 function rpcOrigin(url: string): string {

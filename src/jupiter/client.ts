@@ -1,4 +1,4 @@
-import { UpstreamError } from "../errors.js";
+import { InsufficientFundsError, UpstreamError } from "../errors.js";
 import type { OrderParams, OrderResponse, PriceInfo, TokenInfo } from "./types.js";
 
 export interface JupiterClient {
@@ -97,13 +97,13 @@ export function createJupiterClient(options: JupiterClientOptions): JupiterClien
 function parseOrder(body: unknown): OrderResponse {
   if (!isRecord(body)) throw new UpstreamError("Jupiter order response was not an object");
   if (typeof body.error === "string" && body.inAmount == null) {
-    throw new UpstreamError(`Jupiter order failed: ${body.error}`);
+    throwJupiterError(body, `Jupiter order failed: ${body.error}`, { errorCode: body.errorCode });
   }
   if (typeof body.inAmount !== "string" || typeof body.outAmount !== "string") {
     throw new UpstreamError("Jupiter order response did not include inAmount and outAmount");
   }
   const errorMessage = typeof body.errorMessage === "string" ? body.errorMessage : null;
-  if (errorMessage) throw new UpstreamError(`Jupiter order failed: ${errorMessage}`, { errorCode: body.errorCode });
+  if (errorMessage) throwJupiterError(body, `Jupiter order failed: ${errorMessage}`, { errorCode: body.errorCode });
   const platformFee = isRecord(body.platformFee)
     ? {
         amount: typeof body.platformFee.amount === "string" ? body.platformFee.amount : undefined,
@@ -191,7 +191,7 @@ async function getJson(
     }
     if (response.ok) return body;
     const retry = response.status === 429 && attempt < JUPITER_429_ATTEMPTS - 1;
-    if (!retry) throw new UpstreamError(`Jupiter HTTP ${response.status}`, { url, body });
+    if (!retry) throwJupiterError(body, `Jupiter HTTP ${response.status}`, { url, body, status: response.status });
     const delay = retryDelayMs(response, attempt);
     process.stderr.write(`advan: Jupiter HTTP 429, retrying in ${delay}ms (${attempt + 1}/${JUPITER_429_ATTEMPTS - 1})\n`);
     await sleep(delay);
@@ -205,6 +205,45 @@ function retryDelayMs(response: Response, attempt: number): number {
     return Math.min(Math.round(Number(header) * 1000), JUPITER_429_MAX_DELAY_MS);
   }
   return Math.min(JUPITER_429_BASE_DELAY_MS * 2 ** attempt, JUPITER_429_MAX_DELAY_MS);
+}
+
+const USER_WALLET_MESSAGE =
+  /insufficient funds|insufficient balance|insufficient lamports|not enough (?:sol|funds|balance|tokens)|token account not found|no associated token account|insufficient input amount/i;
+
+const USER_WALLET_CODES = new Set([
+  "INSUFFICIENT_FUNDS",
+  "INSUFFICIENT_BALANCE",
+  "INSUFFICIENT_LAMPORTS",
+  "TOKEN_ACCOUNT_NOT_FOUND",
+  "INSUFFICIENT_INPUT_AMOUNT",
+]);
+
+export function isUserWalletJupiterError(message: string, code?: string): boolean {
+  if (code && USER_WALLET_CODES.has(code.toUpperCase())) return true;
+  return USER_WALLET_MESSAGE.test(message);
+}
+
+function jupiterErrorText(body: unknown): { message?: string; code?: string } {
+  if (typeof body === "string") return isUserWalletJupiterError(body) ? { message: body } : {};
+  if (!isRecord(body)) return {};
+  const message =
+    (typeof body.error === "string" && body.error) ||
+    (typeof body.errorMessage === "string" && body.errorMessage) ||
+    (typeof body.message === "string" && body.message) ||
+    undefined;
+  const rawCode = body.errorCode ?? body.code;
+  const code = typeof rawCode === "string" ? rawCode : undefined;
+  return { message, code };
+}
+
+function throwJupiterError(body: unknown, fallback: string, details?: unknown): never {
+  const parsed = jupiterErrorText(body);
+  const text = parsed.message ?? fallback;
+  const shown = parsed.message ? `Jupiter order failed: ${parsed.message}` : fallback;
+  if (isUserWalletJupiterError(text, parsed.code)) {
+    throw new InsufficientFundsError(shown, details);
+  }
+  throw new UpstreamError(shown, details);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
