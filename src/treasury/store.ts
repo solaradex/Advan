@@ -16,9 +16,8 @@ export interface TreasuryApproval {
 interface StoreData {
   policies: Record<string, TreasuryPolicy>;
   approvals: Record<string, TreasuryApproval>;
-  evaluations: Record<string, TreasuryEvaluation>;
 }
-const empty = (): StoreData => ({ policies: {}, approvals: {}, evaluations: {} });
+const empty = (): StoreData => ({ policies: {}, approvals: {} });
 
 export function bearerAuthorized(header: string | undefined, expected: string | undefined): boolean {
   if (!expected || !header?.startsWith("Bearer ")) return false;
