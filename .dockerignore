@@ -1,0 +1,10 @@
+node_modules
+dist
+.git
+.env
+.env.*
+logs
+coverage
+*.keypair
+*.keypair.json
+devnet-payer.json
