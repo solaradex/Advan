@@ -53,3 +53,20 @@ Tests in `test/treasury-execution-guard.test.ts` cover pending approvals, change
 6. Add idempotency, replay prevention, audit integrity controls, and tests against concurrent requests and transaction tampering.
 
 Until these controls are implemented and tested, Stage 3 remains development-only and must not be marketed as production-safe autonomous execution.
+
+
+## Stage 3 ledger — persistent approvals and exposure reservations
+
+Added `src/treasury/ledger.ts` and `test/treasury-ledger.test.ts`.
+
+The ledger persists reservations and quote-bound approval records in one JSON document. Each write is performed while holding an exclusive directory lock, followed by an atomic rename. This serializes cooperating processes sharing a local filesystem and prevents two concurrent reservations from independently passing the same exposure check. Reservation calls require an idempotency key; retries return the original reservation only when the intent and amount match. Reusing a key for another intent fails closed.
+
+Daily and optional session exposure checks include all active `reserved` and `committed` reservations. Rejected or expired approvals release their still-reserved exposure. `authorizeOnce` verifies the persisted approved intent, expiry, digest, operator identity, and reservation state, then changes the reservation from `reserved` to `committed` atomically with the ledger write. A second authorization attempt fails because the reservation is no longer reservable.
+
+### Important limits
+
+- This is a single-host/local-filesystem coordination primitive, **not a production distributed database**. It is not appropriate for NFS, multi-host deployments, or horizontally scaled services. A Postgres transaction with row locks/serializable isolation and unique idempotency constraints is still required for production.
+- A committed reservation means the authorization slot has been consumed; it does not prove a swap landed on-chain. A separate reconciler must release failed transactions when safe and reconcile confirmed swaps before exposure accounting can be considered authoritative.
+- The operator object passed to the ledger must be created by trusted authentication middleware. The ledger does not authenticate users itself.
+- The ledger is not yet connected to HTTP endpoints or `build_swap_tx`; it does not sign or broadcast. Do not treat the current public swap endpoint as governed by this ledger.
+- File locks have no automatic stale-lock recovery after an abrupt process kill. If the lock remains, operations fail with a retry-safe busy error rather than ignoring the lock.
