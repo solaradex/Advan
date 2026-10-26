@@ -43,7 +43,7 @@ The feature branch now includes `src/treasury/executionGuard.ts`, a pure authori
 
 Tests in `test/treasury-execution-guard.test.ts` cover pending approvals, changed quote data, approver mismatch, expiry, malformed transaction input, and non-JSON values.
 
-**This is not yet wired into `build_swap_tx` or a transaction submission route.** The existing endpoint still returns unsigned transactions and the service still does not sign or broadcast. A caller must not treat these primitives as proof of authorization until the following work is complete:
+`build_swap_tx` now returns `treasuryBinding.transactionMessageDigest`, a SHA-256 digest of the decoded Solana message for binding a later approval to the exact message the wallet will sign. This is only a binding aid: the endpoint does not consult Treasury approval state, sign, or broadcast. Do not treat the digest as proof of authorization until the following work is complete:
 
 1. Store bound approvals and intent records transactionally, including one-time state transitions.
 2. Authenticate approvers through a real identity provider and enforce roles server-side.
@@ -79,7 +79,7 @@ Migration `supabase/migrations/20261026170000_treasury_execution_governance.sql`
 - `treasury_reserve_exposure`: serializes reservations by wallet using a transaction-scoped advisory lock, enforces daily and session caps, and uses a unique wallet/idempotency key to make retries safe.
 - `treasury_consume_approval`: locks the approval and reservation rows, verifies approval state, expiry, the verified operator ID supplied by trusted server middleware, and the current intent and transaction-message digests, then consumes the approval and commits the reservation in the same database transaction.
 
-The migration is committed as source only; it has **not** been applied to a Supabase project or production database. Runtime database adapter, approval create/decision endpoints, and Jupiter transaction-flow integration are not yet connected. Do not treat these SQL primitives as active runtime controls until a trusted service uses them correctly.
+The migrations are committed as source only; they have **not** been applied to a Supabase project or production database. A server-only PostgREST adapter now exists in `src/treasury/postgres.ts` for reservations, approval persistence, decisions, listing, and atomic consumption. A second migration adds decision and pending-expiry/release RPCs. The adapter is not yet wired into HTTP approval routes or guarded Jupiter transaction flow. Do not treat these SQL primitives as active runtime controls until a trusted service uses them correctly.
 
 The expired-approval branch deliberately fails closed without trying to update rows before raising an exception, because PostgreSQL rolls back updates in a transaction that raises. Expiry cleanup/release must be performed by a separate sweeper transaction.
 
