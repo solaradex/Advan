@@ -133,9 +133,8 @@ begin
     raise exception 'approval not approved or already consumed' using errcode = '55000';
   end if;
   if v_approval.expires_at <= now() then
-    update public.treasury_bound_approvals set status='expired' where id=p_approval_id;
-    update public.treasury_exposure_reservations set status='released', updated_at=now()
-      where id=v_approval.reservation_id and status='reserved';
+    -- Fail closed. Expiration/release is handled by a separate sweeper transaction;
+    -- raising here would roll back any attempted state updates in this transaction.
     raise exception 'approval expired' using errcode = '55000';
   end if;
   if coalesce(trim(p_verified_operator_id),'') = '' or v_approval.decided_by <> p_verified_operator_id then
