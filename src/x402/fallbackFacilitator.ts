@@ -75,8 +75,16 @@ export function supportsExactV2(supported: SupportedResponse, network: string): 
   return supported.kinds.some((kind) => kind.scheme === "exact" && kind.network === network && kind.x402Version === 2);
 }
 
-/** How often a down CDP facilitator is probed. A late tick still falls inside 10 minutes. */
+/** How long after CDP is marked down the next probe runs. Override with `X402_CDP_RECOVERY_INTERVAL_MS`. */
 export const CDP_RECOVERY_INTERVAL_MS = 5 * 60 * 1000;
+/** Bound on rebuilding payment requirements after a probe, so a stuck initialize cannot wedge the server. */
+export const CDP_REFRESH_TIMEOUT_MS = 15_000;
+
+export interface FacilitatorRecoveryOptions {
+  recoveryIntervalMs?: number;
+  refreshTimeoutMs?: number;
+  onRecovered?: () => void;
+}
 
 export interface FacilitatorHealth {
   active: FacilitatorName;
@@ -88,22 +96,30 @@ export class FallbackFacilitatorClient implements FacilitatorClient {
   lastFacilitator: FacilitatorName | "none" = "none";
   /** Facilitator whose `/supported` payload was returned. New payment requirements use that fee payer. */
   active: FacilitatorName = "cdp";
-  private readonly feePayers = new Map<FacilitatorName, string>();
+  /** Every fee payer ever advertised by that facilitator. A rotation does not drop the previous one. */
+  private readonly feePayers = new Map<FacilitatorName, Set<string>>();
   private readonly down = new Set<FacilitatorName>();
   private cdpNextProbeAtMs?: number;
-  private recoveryTimer?: ReturnType<typeof setInterval>;
-  private recoveryInFlight?: Promise<"skipped" | "still_down" | "restored">;
+  private recoveryTimer?: ReturnType<typeof setTimeout>;
+  /** Set only while the CDP `/supported` check is in flight. `getSupported` must not wait on it. */
+  private recoveryCheck?: Promise<unknown>;
+  private readonly recoveryIntervalMs: number;
+  private readonly refreshTimeoutMs: number;
+  private readonly onRecovered?: () => void;
 
   constructor(
     private readonly primary: FacilitatorClient | null,
     private readonly fallback: FacilitatorClient,
     private readonly network: string,
     private readonly onFailover?: (event: FailoverEvent) => void,
-    /** Called after `active` moves so the next payment challenge uses that facilitator. */
+    /** Called after `active` moves so the resource server reloads that facilitator's kinds. */
     private readonly onActiveChange?: () => Promise<void>,
-    private readonly recoveryIntervalMs = CDP_RECOVERY_INTERVAL_MS,
+    options: FacilitatorRecoveryOptions = {},
   ) {
     if (!primary) this.active = "payai";
+    this.recoveryIntervalMs = options.recoveryIntervalMs ?? CDP_RECOVERY_INTERVAL_MS;
+    this.refreshTimeoutMs = options.refreshTimeoutMs ?? CDP_REFRESH_TIMEOUT_MS;
+    this.onRecovered = options.onRecovered;
   }
 
   /** Milliseconds when the next CDP probe is allowed. Undefined while CDP is primary. */
@@ -123,30 +139,36 @@ export class FallbackFacilitatorClient implements FacilitatorClient {
     return { active: this.active, cdp: "primary", cdpNextProbeAt: null };
   }
 
-  /** Probe CDP on a timer. No-op until CDP has been marked down. Does not keep the process alive. */
+  /**
+   * Arm the one-shot timer when CDP is already down (startup failover).
+   * Later failures arm themselves. Does not keep the process alive.
+   */
   startRecoveryProbe(): void {
-    if (!this.primary || this.recoveryTimer) return;
-    this.recoveryTimer = setInterval(() => {
-      void this.probeRecovery();
-    }, this.recoveryIntervalMs);
-    this.recoveryTimer.unref?.();
+    if (!this.primary || !this.down.has("cdp")) return;
+    this.armRecoveryTimer();
   }
 
   /**
-   * Ask CDP `/supported` once the recovery interval has elapsed. A healthy answer
-   * makes CDP primary again and rebuilds the next payment challenge.
+   * Ask CDP `/supported` at `failureTime + interval`. A healthy answer reloads
+   * the resource server outside this check so `getSupported` cannot deadlock on it.
+   * A failed reload marks CDP down again and reloads PayAI.
    */
-  probeRecovery(now = Date.now()): Promise<"skipped" | "still_down" | "restored"> {
-    if (this.recoveryInFlight) return this.recoveryInFlight;
-    const run = this.probeRecoveryOnce(now).finally(() => {
-      this.recoveryInFlight = undefined;
-    });
-    this.recoveryInFlight = run;
-    return run;
+  async probeRecovery(now = Date.now()): Promise<"skipped" | "still_down" | "restored"> {
+    if (this.recoveryCheck) return "skipped";
+    const check = this.evaluateCdp(now);
+    this.recoveryCheck = check;
+    let evaluation: "skipped" | "still_down" | "healthy";
+    try {
+      evaluation = await check;
+    } finally {
+      if (this.recoveryCheck === check) this.recoveryCheck = undefined;
+    }
+    if (evaluation !== "healthy") return evaluation;
+    const restored = await this.finishRestore();
+    return restored ? "restored" : "still_down";
   }
 
   async getSupported(): Promise<SupportedResponse> {
-    await this.probeRecovery();
     if (this.primary && this.active === "cdp" && !this.down.has("cdp")) {
       try {
         const supported = await this.primary.getSupported();
@@ -200,12 +222,7 @@ export class FallbackFacilitatorClient implements FacilitatorClient {
         this.markCdpDown();
         if (this.active === "cdp") {
           this.active = "payai";
-          try {
-            await this.onActiveChange?.();
-          } catch (hookError) {
-            const message = hookError instanceof Error ? hookError.message : "refresh failed";
-            process.stderr.write(`advan: facilitator refresh failed: ${message}\n`);
-          }
+          await this.reloadActive("PayAI failover");
         }
       }
       throw error;
@@ -222,9 +239,8 @@ export class FallbackFacilitatorClient implements FacilitatorClient {
   }
 
   private ownerOf(feePayer: string): FacilitatorName | undefined {
-    for (const [name, payer] of this.feePayers) {
-      if (payer === feePayer) return name;
-    }
+    if (this.feePayers.get("cdp")?.has(feePayer)) return "cdp";
+    if (this.feePayers.get("payai")?.has(feePayer)) return "payai";
     return undefined;
   }
 
@@ -253,56 +269,94 @@ export class FallbackFacilitatorClient implements FacilitatorClient {
   }
 
   private remember(name: FacilitatorName, supported: SupportedResponse): void {
-    const payer = feePayerFromSupported(supported, this.network);
-    if (payer) this.feePayers.set(name, payer);
+    const payers = feePayersFromSupported(supported, this.network);
+    if (payers.length === 0) return;
+    const known = this.feePayers.get(name) ?? new Set<string>();
+    for (const payer of payers) known.add(payer);
+    this.feePayers.set(name, known);
   }
 
   private note(operation: FacilitatorOperation, error: string): void {
     this.onFailover?.({ operation, from: "cdp", error });
   }
 
-  /** The first failure schedules the probe. Later failures do not push it back. */
+  /** The first failure schedules one probe at now + interval. Later failures do not push it back. */
   private markCdpDown(now = Date.now()): void {
-    if (!this.down.has("cdp")) this.cdpNextProbeAtMs = now + this.recoveryIntervalMs;
+    const first = !this.down.has("cdp");
     this.down.add("cdp");
+    if (!first) return;
+    this.cdpNextProbeAtMs = now + this.recoveryIntervalMs;
+    this.armRecoveryTimer();
   }
 
-  private async probeRecoveryOnce(now: number): Promise<"skipped" | "still_down" | "restored"> {
+  private armRecoveryTimer(): void {
+    if (this.recoveryTimer) clearTimeout(this.recoveryTimer);
+    if (!this.down.has("cdp") || this.cdpNextProbeAtMs == null) return;
+    const delay = Math.max(0, this.cdpNextProbeAtMs - Date.now());
+    this.recoveryTimer = setTimeout(() => {
+      this.recoveryTimer = undefined;
+      void this.probeRecovery();
+    }, delay);
+    this.recoveryTimer.unref?.();
+  }
+
+  private postponeProbe(now: number, message: string): void {
+    this.cdpNextProbeAtMs = now + this.recoveryIntervalMs;
+    this.armRecoveryTimer();
+    process.stderr.write(`advan: ${message}; next probe ${new Date(this.cdpNextProbeAtMs).toISOString()}\n`);
+  }
+
+  /**
+   * Read CDP `/supported` only. Does not reload the resource server.
+   * On success, CDP is already the active facilitator so the reload's `getSupported` returns CDP.
+   */
+  private async evaluateCdp(now: number): Promise<"skipped" | "still_down" | "healthy"> {
     if (!this.primary || !this.down.has("cdp")) return "skipped";
     if (this.cdpNextProbeAtMs != null && now < this.cdpNextProbeAtMs) return "skipped";
     try {
       const supported = await this.primary.getSupported();
       if (!supportsExactV2(supported, this.network)) {
-        this.cdpNextProbeAtMs = now + this.recoveryIntervalMs;
-        process.stderr.write(
-          `advan: CDP facilitator still does not list exact v2; next probe ${new Date(this.cdpNextProbeAtMs).toISOString()}\n`,
-        );
+        this.postponeProbe(now, "CDP facilitator still does not list exact v2");
         return "still_down";
       }
-      this.down.delete("cdp");
       this.remember("cdp", supported);
+      this.down.delete("cdp");
       this.cdpNextProbeAtMs = undefined;
-      const changed = this.active !== "cdp";
       this.active = "cdp";
       this.lastFacilitator = "cdp";
-      if (changed) await this.refreshActive();
-      process.stderr.write("advan: CDP facilitator is healthy again; new payment challenges use CDP\n");
-      return "restored";
+      return "healthy";
     } catch (error) {
-      this.cdpNextProbeAtMs = now + this.recoveryIntervalMs;
-      process.stderr.write(
-        `advan: CDP facilitator still unavailable (${errorText(error)}); next probe ${new Date(this.cdpNextProbeAtMs).toISOString()}\n`,
-      );
+      this.postponeProbe(now, `CDP facilitator still unavailable (${errorText(error)})`);
       return "still_down";
     }
   }
 
-  private async refreshActive(): Promise<void> {
+  /** Reload requirements after the check promise has finished, so this cannot wait on itself. */
+  private async finishRestore(): Promise<boolean> {
+    const reloaded = await this.reloadActive("CDP restore");
+    if (reloaded) {
+      this.onRecovered?.();
+      process.stderr.write("advan: CDP facilitator is healthy again; new payment challenges use CDP\n");
+      return true;
+    }
+    process.stderr.write("advan: CDP restore failed; reverting to PayAI\n");
+    this.active = "payai";
+    this.lastFacilitator = "payai";
+    this.down.add("cdp");
+    this.cdpNextProbeAtMs = Date.now() + this.recoveryIntervalMs;
+    this.armRecoveryTimer();
+    await this.reloadActive("PayAI reload after a failed CDP restore");
+    return false;
+  }
+
+  private async reloadActive(label: string): Promise<boolean> {
     try {
-      await this.onActiveChange?.();
-    } catch (hookError) {
-      const message = hookError instanceof Error ? hookError.message : "refresh failed";
-      process.stderr.write(`advan: facilitator refresh failed: ${message}\n`);
+      await withTimeout(this.onActiveChange?.() ?? Promise.resolve(), this.refreshTimeoutMs);
+      return true;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "refresh failed";
+      process.stderr.write(`advan: ${label} failed (${message})\n`);
+      return false;
     }
   }
 }
@@ -312,12 +366,42 @@ function feePayerOf(requirements: PaymentRequirements): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
-function feePayerFromSupported(supported: SupportedResponse, network: string): string | undefined {
-  const kind = supported.kinds.find(
-    (item) => item.scheme === "exact" && item.network === network && item.x402Version === 2,
-  );
-  const extra = kind?.extra as { feePayer?: unknown } | undefined;
-  return typeof extra?.feePayer === "string" ? extra.feePayer : undefined;
+/** Every fee payer a facilitator listed for this network. Kinds accumulate across probes. */
+export function feePayersFromSupported(supported: SupportedResponse, network: string): string[] {
+  const found = new Set<string>();
+  for (const kind of supported.kinds) {
+    if (kind.network !== network) continue;
+    const extra = kind.extra as { feePayer?: unknown; feePayers?: unknown } | undefined;
+    addPayer(found, extra?.feePayer);
+    addPayer(found, extra?.feePayers);
+  }
+  return [...found];
+}
+
+function addPayer(found: Set<string>, value: unknown): void {
+  if (typeof value === "string" && value.length > 0) {
+    found.add(value);
+    return;
+  }
+  if (!Array.isArray(value)) return;
+  for (const item of value) addPayer(found, item);
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`facilitator refresh timed out after ${ms}ms`)), ms);
+    timer.unref?.();
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        reject(error instanceof Error ? error : new Error("facilitator refresh failed"));
+      },
+    );
+  });
 }
 
 function errorText(error: unknown): string {

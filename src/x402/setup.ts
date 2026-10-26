@@ -65,6 +65,19 @@ export async function setupX402(config: AppConfig, log: UsageLogger): Promise<X4
       if (!serverRef.current) throw new Error("x402 resource server is not ready");
       await serverRef.current.initialize();
     },
+    {
+      recoveryIntervalMs: config.x402.cdpRecoveryIntervalMs,
+      onRecovered: () => {
+        log.write({
+          ts: nowIso(),
+          kind: "facilitator_recovered",
+          success: true,
+          facilitator: "cdp",
+          paymentStatus: "not_applicable",
+          network: config.x402.network,
+        });
+      },
+    },
   );
   const resourceServer = new x402ResourceServer(facilitator)
     .register(config.x402.network as `${string}:${string}`, new ExactSvmScheme({ rpcUrl: config.x402.rpcUrl }))

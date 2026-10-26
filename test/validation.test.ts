@@ -4,6 +4,7 @@ import { quoteSchema, swapSchema, tokenRiskSchema, portfolioSchema } from "../sr
 import { ConfigError } from "../src/errors.js";
 import { loadConfig } from "../src/config.js";
 import { SOLANA_DEVNET_CAIP, SOLANA_MAINNET_CAIP, USDC_DEVNET_MINT, USDC_MAINNET_MINT, WSOL_MINT, usdcMintForNetwork } from "../src/constants.js";
+import { CDP_RECOVERY_INTERVAL_MS } from "../src/x402/fallbackFacilitator.js";
 
 describe("tool input validation", () => {
   it("rejects malformed quote and swap inputs", () => {
@@ -39,6 +40,8 @@ describe("tool input validation", () => {
     expect(usdcMintForNetwork(SOLANA_DEVNET_CAIP)).toBe(USDC_DEVNET_MINT);
     expect(usdcMintForNetwork("devnet")).toBe(USDC_DEVNET_MINT);
     expect(usdcMintForNetwork(SOLANA_MAINNET_CAIP)).toBe(USDC_MAINNET_MINT);
+    expect(config.x402.cdpRecoveryIntervalMs).toBe(CDP_RECOVERY_INTERVAL_MS);
+    expect(loadConfig({ X402_CDP_RECOVERY_INTERVAL_MS: "1000" }).x402.cdpRecoveryIntervalMs).toBe(1000);
     expect(loadConfig({ X402_NETWORK: "mainnet", X402_RPC_URL: "https://rpc.example" }).x402.rpcUrl).toBe(
       "https://rpc.example",
     );

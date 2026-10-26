@@ -21,6 +21,7 @@ export interface UsageStats {
     estimatedIntegratorFeeRawByMint: Record<string, string>;
   };
   facilitatorFailovers: number;
+  facilitatorRecoveries: number;
   referralRequotes: number;
   notes: string[];
 }
@@ -52,6 +53,7 @@ export function summarizeUsage(events: UsageEvent[], now = new Date()): UsageSta
   let usdc = 0n;
   let eventsWithFee = 0;
   let facilitatorFailovers = 0;
+  let facilitatorRecoveries = 0;
   let referralRequotes = 0;
 
   for (const event of events) {
@@ -72,6 +74,7 @@ export function summarizeUsage(events: UsageEvent[], now = new Date()): UsageSta
     }
     if (event.kind === "fee_check_failure") feeCheckFailures += 1;
     if (event.kind === "facilitator_failover") facilitatorFailovers += 1;
+    if (event.kind === "facilitator_recovered") facilitatorRecoveries += 1;
     if (event.kind === "referral_requote") referralRequotes += 1;
     if (event.kind === "x402_verification" && !event.success) failedVerifications += 1;
     if (event.paymentStatus === "verified" && isCall(event)) verified += 1;
@@ -109,6 +112,7 @@ export function summarizeUsage(events: UsageEvent[], now = new Date()): UsageSta
       estimatedIntegratorFeeRawByMint,
     },
     facilitatorFailovers,
+    facilitatorRecoveries,
     referralRequotes,
     notes: NOTES,
   };

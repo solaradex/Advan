@@ -7,7 +7,8 @@ export type UsageKind =
   | "referral_requote"
   | "x402_settlement"
   | "x402_verification"
-  | "facilitator_failover";
+  | "facilitator_failover"
+  | "facilitator_recovered";
 
 export type PaymentStatus =
   | "free"

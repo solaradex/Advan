@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { FacilitatorClient } from "@x402/core/server";
 import type {
   Network,
@@ -78,6 +78,9 @@ function connectError(): Error {
 }
 
 describe("facilitator fallback policy", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
   it("classifies connect failures, timeouts, and HTTP statuses", () => {
     expect(isDefiniteNonSubmission(connectError())).toBe(true);
     expect(isDefiniteNonSubmission(httpError(500))).toBe(false);
@@ -190,6 +193,83 @@ describe("facilitator fallback policy", () => {
     expect(refreshes).toBe(2);
     const rebuilt = await client.getSupported();
     expect(rebuilt.kinds[0]?.extra).toMatchObject({ feePayer: "CDP_FEE" });
+  });
+
+  it("arms the next probe at the failure time plus the interval", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-26T00:00:00.000Z"));
+    const primary = new FakeFacilitator({
+      supported: supported(SOLANA_DEVNET_CAIP, "CDP_FEE"),
+      verify: httpError(500),
+    });
+    const payai = new FakeFacilitator({ supported: supported(SOLANA_DEVNET_CAIP, "PAYAI_FEE") });
+    const client = new FallbackFacilitatorClient(primary, payai, SOLANA_DEVNET_CAIP, undefined, undefined, {
+      recoveryIntervalMs: 5_000,
+    });
+    await client.getSupported();
+    await expect(client.verify(payload, priced("CDP_FEE"))).rejects.toThrow(/500/);
+    const before = primary.supportedCalls;
+    expect(client.nextCdpProbeAt).toBe(Date.now() + 5_000);
+    await vi.advanceTimersByTimeAsync(4_999);
+    expect(primary.supportedCalls).toBe(before);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(primary.supportedCalls).toBe(before + 1);
+    expect(client.health().cdp).toBe("primary");
+  });
+
+  it("does not let getSupported wait on an in-flight recovery probe", async () => {
+    const primary = new FakeFacilitator({
+      supported: supported(SOLANA_DEVNET_CAIP, "CDP_FEE"),
+      verify: httpError(500),
+    });
+    let releaseProbe: (() => void) | undefined;
+    const original = primary.getSupported.bind(primary);
+    primary.getSupported = async () => {
+      if (releaseProbe) await new Promise<void>((resolve) => {
+        releaseProbe = resolve;
+      });
+      return original();
+    };
+    const payai = new FakeFacilitator({ supported: supported(SOLANA_DEVNET_CAIP, "PAYAI_FEE") });
+    const client = new FallbackFacilitatorClient(primary, payai, SOLANA_DEVNET_CAIP);
+    await client.getSupported();
+    await expect(client.verify(payload, priced("CDP_FEE"))).rejects.toThrow(/500/);
+    releaseProbe = () => undefined;
+    const pending = client.probeRecovery(client.nextCdpProbeAt);
+    const raced = await Promise.race([
+      client.getSupported().then(() => "supported" as const),
+      pending.then(() => "probe" as const),
+      new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 50)),
+    ]);
+    expect(raced).toBe("supported");
+    const resume = releaseProbe;
+    releaseProbe = undefined;
+    resume();
+    await pending;
+  });
+
+  it("routes an old CDP fee payer and a rotated one to CDP", async () => {
+    const primary = new FakeFacilitator({
+      supported: {
+        kinds: [
+          { x402Version: 2, scheme: "exact", network: SOLANA_DEVNET_CAIP, extra: { feePayer: "GVJJ7rdG" } },
+          { x402Version: 2, scheme: "exact", network: SOLANA_DEVNET_CAIP, extra: { feePayers: ["D6ZhtNQ5"] } },
+        ],
+        extensions: [],
+        signers: {},
+      },
+    });
+    const payai = new FakeFacilitator({ supported: supported(SOLANA_DEVNET_CAIP, "PAYAI_FEE") });
+    const client = new FallbackFacilitatorClient(primary, payai, SOLANA_DEVNET_CAIP);
+    await client.getSupported();
+    await client.verify(payload, priced("GVJJ7rdG"));
+    await client.verify(payload, priced("D6ZhtNQ5"));
+    primary.behavior.supported = supported(SOLANA_DEVNET_CAIP, "NEW_FEE");
+    await client.getSupported();
+    await client.verify(payload, priced("GVJJ7rdG"));
+    await client.verify(payload, priced("NEW_FEE"));
+    expect(primary.verifyCalls).toBe(4);
+    expect(payai.verifyCalls).toBe(0);
   });
 
   it("falls back when CDP does not advertise exact v2 for the network", async () => {

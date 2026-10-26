@@ -19,6 +19,7 @@ import {
   WSOL_MINT,
 } from "./constants.js";
 import { ConfigError } from "./errors.js";
+import { CDP_RECOVERY_INTERVAL_MS } from "./x402/fallbackFacilitator.js";
 import { buildReferralTokenAccountMap } from "./jupiter/referralAccounts.js";
 
 export type FeeCheckMode = "fail" | "warn";
@@ -40,6 +41,8 @@ export interface X402Config {
   payaiFeeUsd: number;
   cdpConfigured: boolean;
   facilitatorTimeoutMs: number;
+  /** Delay after CDP is marked down before the next `/supported` probe. */
+  cdpRecoveryIntervalMs: number;
   required: boolean;
   /** RPC used only to embed an x402 payment blockhash. Never SOLANA_RPC_URL. */
   rpcUrl: string;
@@ -338,6 +341,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
         "X402_FACILITATOR_TIMEOUT_MS",
         1000,
         120_000,
+      ),
+      cdpRecoveryIntervalMs: parseIntInRange(
+        optional(env, "X402_CDP_RECOVERY_INTERVAL_MS"),
+        CDP_RECOVERY_INTERVAL_MS,
+        "X402_CDP_RECOVERY_INTERVAL_MS",
+        0,
+        30 * 60 * 1000,
       ),
       required: parseBool(optional(env, "X402_REQUIRED"), false, "X402_REQUIRED"),
       rpcUrl: x402RpcUrl,
