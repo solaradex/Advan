@@ -9,8 +9,9 @@ loadDotenv();
 const config = loadConfig();
 const { ctx, x402 } = await boot(config, { mirrorStdout: config.usageLogStdout });
 const app = createApp({ ctx, x402 });
+const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
 const server = app.listen(config.port, config.host, () => {
-  process.stderr.write(`advan: http listening on ${config.host}:${config.port}\n`);
+  process.stderr.write(`advan: http listening on ${config.host}:${config.port} as uid ${uid ?? "unknown"}\n`);
 });
 
 function shutdown(): void {

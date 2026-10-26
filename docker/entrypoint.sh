@@ -17,9 +17,13 @@ else
   exit 1
 fi
 
+# Fly init logs "Preparing to run: docker-entrypoint.sh … as root" from the image
+# USER, which stays root so this script can chown the volume. That line is not
+# the server uid. `exec su-exec` replaces this process; pid 1 is the node user.
 if [ "$(id -u)" -eq 0 ]; then
-  # su-exec is the Alpine equivalent of gosu. It execs the server as node.
+  echo "advan: entrypoint uid 0, exec su-exec ${run_as}" >&2
   exec su-exec "$run_as" "$@"
 fi
 
+echo "advan: entrypoint uid $(id -u), already unprivileged" >&2
 exec "$@"

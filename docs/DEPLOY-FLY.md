@@ -107,7 +107,7 @@ fly status
 fly logs
 ```
 
-The server process is user `node` (uid 1000). A new SSH session is root, so check pid 1 rather than `id` with no arguments:
+Fly init logs `Preparing to run: docker-entrypoint.sh node dist/http-entry.js as root` before the process starts. That user is the image `USER` (root, so the entrypoint can `chown` the volume). The entrypoint then logs `exec su-exec node` and replaces itself. The server log line is `http listening … as uid 1000`. A new SSH session is root, so check pid 1 rather than `id` with no arguments:
 
 ```bash
 fly ssh console -C "cat /proc/1/status"

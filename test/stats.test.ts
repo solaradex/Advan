@@ -55,6 +55,8 @@ describe("usage stats", () => {
     expect(stats.callsToday).toBe(3);
     expect(stats.callsByTool.get_quote).toBe(1);
     expect(stats.errors).toBe(1);
+    expect(stats.clientErrors).toBe(0);
+    expect(stats.clientErrorsByCode).toEqual({});
     expect(stats.feeCheckFailures).toBe(1);
     expect(stats.x402.settled).toBe(1);
     expect(stats.x402.failedSettlements).toBe(1);
@@ -62,5 +64,42 @@ describe("usage stats", () => {
     expect(stats.x402.verified).toBe(1);
     expect(stats.referral.estimatedIntegratorFeeRawByMint[WSOL_MINT]).toBe("400000");
     expect(stats.facilitatorFailovers).toBe(1);
+  });
+
+  it("counts insufficient_funds as a client error, not a server error", () => {
+    const events: UsageEvent[] = [
+      {
+        ts: "2026-10-25T12:00:00.000Z",
+        kind: "tool",
+        tool: "get_quote",
+        success: false,
+        errorCode: "insufficient_funds",
+        paymentStatus: "free",
+      },
+      {
+        ts: "2026-10-25T12:01:00.000Z",
+        kind: "tool",
+        tool: "get_quote",
+        success: false,
+        errorCode: "upstream",
+        paymentStatus: "free",
+      },
+      {
+        ts: "2026-10-25T12:02:00.000Z",
+        kind: "fee_check_failure",
+        tool: "build_swap_tx",
+        success: false,
+        errorCode: "fee_check_failure",
+        paymentStatus: "free",
+      },
+    ];
+    const stats = summarizeUsage(events, new Date("2026-10-25T18:00:00.000Z"));
+    expect(stats.calls).toBe(3);
+    expect(stats.errors).toBe(2);
+    expect(stats.errorsByCode).toEqual({ upstream: 1, fee_check_failure: 1 });
+    expect(stats.clientErrors).toBe(1);
+    expect(stats.clientErrorsByCode).toEqual({ insufficient_funds: 1 });
+    expect(stats.feeCheckFailures).toBe(1);
+    expect(stats.notes.some((note) => note.includes("clientErrors"))).toBe(true);
   });
 });

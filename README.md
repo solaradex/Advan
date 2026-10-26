@@ -12,10 +12,10 @@ Package name: `advan-mcp` (unregistered on npm when this tree was created on 202
 
 ## Hosted endpoint
 
-Placeholder until the Fly app exists. The app name in `fly.toml` is `advan`; change it if that name is already taken, and use the hostname Fly gives you in place of the URL below.
-
 - `https://advan.fly.dev`
 - Streamable HTTP MCP: `https://advan.fly.dev/mcp`
+
+`PUBLIC_BASE_URL` is that origin. x402 resource URLs and Bazaar metadata use it, because Fly terminates TLS and the app would otherwise advertise `http://`.
 
 Deploy steps are in [docs/DEPLOY-FLY.md](docs/DEPLOY-FLY.md).
 

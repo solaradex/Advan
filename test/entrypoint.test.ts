@@ -82,6 +82,7 @@ describe("docker entrypoint", () => {
 
       expect(result.code).toBe(0);
       expect(result.stdout).toBe("started");
+      expect(result.stderr).toContain("exec su-exec node");
       expect(readFileSync(chownLog, "utf8").trim()).toBe(`-R node:node ${dataDir}`);
       expect(readFileSync(suLog, "utf8").trim()).toBe("node");
     } finally {
@@ -122,7 +123,7 @@ describe("docker entrypoint", () => {
       });
 
       expect(result.code).toBe(0);
-      expect(result.stderr).toBe("");
+      expect(result.stderr).toContain("already unprivileged");
       expect(readFileSync(marker, "utf8")).toBe("ok");
       expect(readFileSync(chownLog, "utf8")).toContain(dataDir);
       expect(() => readFileSync(suLog, "utf8")).toThrow();

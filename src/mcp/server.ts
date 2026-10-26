@@ -1,5 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { createPaymentWrapper } from "@x402/mcp";
+import { publicResourceUrl } from "../config.js";
 import { PaymentsUnconfiguredError, toAdvanError } from "../errors.js";
 import { SERVICE_NAME, VERSION } from "../version.js";
 import { buildSwapTx } from "../tools/buildSwap.js";
@@ -58,7 +59,7 @@ export function createMcpServer(ctx: ToolContext, x402: X402Runtime | null): Mcp
     server.registerTool(
       "token_risk",
       { title: "Token risk", description: riskDescription, inputSchema: tokenRiskShape },
-      withFreshPayment(x402, riskDescription, x402.discovery.tokenRisk, async (args) => {
+      withFreshPayment(x402, toolResource(ctx, riskDescription, "/v1/token_risk"), x402.discovery.tokenRisk, async (args) => {
         try {
           return ok(await tokenRisk(args, paidContext(ctx, x402, "verified")));
         } catch (error) {
@@ -69,7 +70,7 @@ export function createMcpServer(ctx: ToolContext, x402: X402Runtime | null): Mcp
     server.registerTool(
       "wallet_portfolio",
       { title: "Wallet portfolio", description: portfolioDescription, inputSchema: portfolioShape },
-      withFreshPayment(x402, portfolioDescription, x402.discovery.portfolio, async (args) => {
+      withFreshPayment(x402, toolResource(ctx, portfolioDescription, "/v1/wallet_portfolio"), x402.discovery.portfolio, async (args) => {
         try {
           return ok(await walletPortfolio(args, paidContext(ctx, x402, "verified")));
         } catch (error) {
@@ -93,6 +94,14 @@ export function createMcpServer(ctx: ToolContext, x402: X402Runtime | null): Mcp
   return server;
 }
 
+function toolResource(ctx: ToolContext, description: string, path: string): { description: string; mimeType: string; url?: string } {
+  return {
+    description,
+    mimeType: "application/json",
+    url: publicResourceUrl(ctx.config.publicBaseUrl, path),
+  };
+}
+
 /**
  * Payment requirements, including the Solana blockhash, are built on every call.
  * A blockhash captured at process start expires in about 60–90 seconds and then
@@ -100,7 +109,7 @@ export function createMcpServer(ctx: ToolContext, x402: X402Runtime | null): Mcp
  */
 export function withFreshPayment(
   x402: Pick<X402Runtime, "resourceServer" | "buildAccepts">,
-  description: string,
+  resource: { description: string; mimeType?: string; url?: string },
   extensions: Record<string, unknown>,
   handler: (args: Record<string, unknown>) => Promise<{
     content: { type: "text"; text: string }[];
@@ -113,7 +122,11 @@ export function withFreshPayment(
     const wrapped = createPaymentWrapper(x402.resourceServer, {
       accepts,
       extensions,
-      resource: { description, mimeType: "application/json" },
+      resource: {
+        description: resource.description,
+        mimeType: resource.mimeType ?? "application/json",
+        url: resource.url,
+      },
     });
     return wrapped(handler)(args, extra);
   };

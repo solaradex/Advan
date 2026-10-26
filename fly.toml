@@ -13,6 +13,10 @@ primary_region = "iad"
   # src/config.ts defaults PORT to 8787. internal_port below must stay in sync.
   PORT = "8787"
   USAGE_LOG_PATH = "/data/usage.jsonl"
+  # Comma-separated hostnames, no scheme and no port. src/config.ts splits on commas.
+  ADVAN_ALLOWED_HOSTS = "advan.fly.dev"
+  # Fly terminates TLS. x402 resource URLs and Bazaar metadata use this origin.
+  PUBLIC_BASE_URL = "https://advan.fly.dev"
   X402_NETWORK = "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp"
   JUPITER_REFERRAL_FEE_BPS = "100"
   X402_PRICE_USD = "0.02"
@@ -32,13 +36,16 @@ primary_region = "iad"
   auto_start_machines = true
   min_machines_running = 1
 
-  # Boot probes the x402 facilitator before listen (timeout default 90s).
+  # GET /healthz does not require Host advan.fly.dev. The header still names the public host.
   [[http_service.checks]]
-    grace_period = "120s"
+    grace_period = "60s"
     interval = "30s"
     timeout = "5s"
     method = "GET"
     path = "/healthz"
+
+    [http_service.checks.headers]
+      Host = "advan.fly.dev"
 
 [[vm]]
   size = "shared-cpu-1x"
