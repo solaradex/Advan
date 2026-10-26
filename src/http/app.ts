@@ -115,6 +115,7 @@ export function createApp(options: AppOptions): Express {
       nonCustodial: true,
       routes: {
         health: "GET /health",
+        healthz: "GET /healthz",
         stats: "GET /stats",
         quote: "POST /v1/get_quote",
         swap: "POST /v1/build_swap_tx",
@@ -123,6 +124,10 @@ export function createApp(options: AppOptions): Express {
         mcp: "POST /mcp",
       },
     });
+  });
+
+  app.get("/healthz", (_req, res) => {
+    res.status(200).json({ status: "ok" });
   });
 
   app.get("/health", (_req, res) => {

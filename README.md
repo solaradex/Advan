@@ -6,6 +6,19 @@ The server is non-custodial. It never signs a transaction and it never loads a t
 
 Package name: `advan-mcp` (unregistered on npm when this tree was created on 2026-10-25). Change the `"name"` field in `package.json` before publishing. The `advan-mcp` bin name can stay.
 
+## Fees
+
+**Fees (hosted endpoint):** Swaps built through Advan include a 1.00% (100 bps) platform fee via Jupiter's referral program. Jupiter keeps 20% of that fee, so Advan nets 0.80%. The fee shows in every quote (`platformFee`) before you sign. `token_risk` and `wallet_portfolio` cost **$0.02 USDC per call** via x402 (Solana mainnet). Quotes are free. Non-custodial: you sign every transaction in your own wallet; Advan never holds keys or funds. Self-hosted copies charge nothing unless the operator sets their own fee.
+
+## Hosted endpoint
+
+Placeholder until the Fly app exists. The app name in `fly.toml` is `advan`; change it if that name is already taken, and use the hostname Fly gives you in place of the URL below.
+
+- `https://advan.fly.dev`
+- Streamable HTTP MCP: `https://advan.fly.dev/mcp`
+
+Deploy steps are in [docs/DEPLOY-FLY.md](docs/DEPLOY-FLY.md).
+
 ## What you can call
 
 | Tool | Price | What it does |
@@ -97,8 +110,16 @@ Docker:
 
 ```bash
 docker build -t advan .
-docker run --env-file .env -p 8787:8787 -v advan-logs:/app/logs advan
+docker run --env-file .env -p 8787:8787 advan
 ```
+
+The image default for `USAGE_LOG_PATH` is `/data/usage.jsonl`. The entrypoint starts as root, `chown`s `/data` to `node` (and creates `/data` when no volume is mounted), then `su-exec` runs the server as `node`. Mount a volume to keep the usage log:
+
+```bash
+docker run --env-file .env -p 8787:8787 -v advan-data:/data advan
+```
+
+A development `.env` copied from `.env.example` sets `HOST=127.0.0.1`, which hides the port from outside the container. For a published port, set `HOST=0.0.0.0` in that env file or pass `-e HOST=0.0.0.0`. Fly sets `HOST` in `fly.toml`.
 
 The image runs the HTTP server only. Referral setup scripts run from a checkout (`npm install` includes the Jupiter referral SDK as a dev dependency).
 
@@ -144,6 +165,7 @@ Cursor `.cursor/mcp.json` uses the same `mcpServers` object. During development 
 | Method | Path | Body |
 |---|---|---|
 | GET | `/health` | — |
+| GET | `/healthz` | — |
 | GET | `/stats` | — |
 | POST | `/v1/get_quote` | `{ "inputMint", "outputMint", "amount", "slippageBps"? }` |
 | POST | `/v1/build_swap_tx` | quote fields plus `taker`, optional `selfBroadcast`, optional `receiver` |
@@ -156,6 +178,7 @@ Cursor `.cursor/mcp.json` uses the same `mcpServers` object. During development 
 Example:
 
 ```bash
+curl -s http://127.0.0.1:8787/healthz
 curl -s http://127.0.0.1:8787/health
 curl -s http://127.0.0.1:8787/v1/get_quote \
   -H 'content-type: application/json' \
@@ -233,8 +256,8 @@ These are configuration, not hardcoded wallets:
 
 - **Referral fee** defaults to the 50 bps minimum. Raising it (up to 255) earns more and makes quotes less competitive. Jupiter keeps 20%.
 - **x402 price** defaults to $0.01 so a PayAI mainnet settlement ($0.00133) stays under about 13% of the price. Set `X402_PRICE_USD=0.005` if you accept a tighter margin; mainnet will warn at the 5× check.
-- **Package name** `advan-mcp` looked free on 2026-10-25. This repo does not publish it.
-- **Hosting** is undecided. The Dockerfile listens on 8787. Put a real RPC URL in `SOLANA_RPC_URL` before production traffic; `api.mainnet-beta.solana.com` is rate-limited.
+- **Package name** `advan-mcp` looked free on 2026-10-25. `.github/workflows/npm-publish.yml` publishes it on a GitHub release (or a manual workflow run). Publishing still needs an npm token stored as `NPM_TOKEN`.
+- **Hosting** for Fly.io is in `fly.toml` and [docs/DEPLOY-FLY.md](docs/DEPLOY-FLY.md). The Dockerfile listens on 8787. Put a real RPC URL in `SOLANA_RPC_URL` before production traffic; `api.mainnet-beta.solana.com` is rate-limited.
 - **CDP** keys are free to create. The first 1,000 successful settlements each month are free, then $0.001. Whether devnet settlements count toward that quota is not stated in the CDP docs.
 - **PayAI** includes 1,000 free credits total (not monthly). Devnet settlements are free. Topping up is a spending decision.
 - **Self-broadcast default** is off so JupiterZ can compete. Turn `SWAP_SELF_BROADCAST_DEFAULT` on if every client broadcasts its own transaction.
