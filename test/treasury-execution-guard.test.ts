@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { assertExecutionAuthorized, createBoundApproval, type BoundExecutionIntent } from "../src/treasury/executionGuard.js";
+import { assertExecutionAuthorized, createBoundApproval, executionDigest, transactionMessageDigest, type BoundExecutionIntent } from "../src/treasury/executionGuard.js";
+import { encodeUnsignedTransaction } from "../src/solana/unsignedTx.js";
 
 const intent = (): BoundExecutionIntent => ({
   intentId: "intent-1",
@@ -14,6 +15,17 @@ const intent = (): BoundExecutionIntent => ({
 });
 
 describe("quote-bound execution guard", () => {
+  it("derives a digest from the decoded unsigned transaction message", () => {
+    const tx = encodeUnsignedTransaction({ signers: ["11111111111111111111111111111111"] });
+    expect(transactionMessageDigest(tx)).toMatch(/^[a-f0-9]{64}$/);
+    expect(() => transactionMessageDigest("not-a-transaction")).toThrow(/Unable to decode/);
+  });
+
+  it("rejects non-JSON intent data instead of hashing ambiguously", () => {
+    const i = intent();
+    expect(() => executionDigest({ ...i, quoteResponse: { value: undefined } })).toThrow(/non-JSON value/);
+  });
+
   it("rejects pending approvals", () => {
     const i = intent();
     const approval = createBoundApproval(i);
