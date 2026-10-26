@@ -68,17 +68,30 @@ export class TreasuryPgAdapter {
       throw new Error("Invalid approval TTL or amount");
     }
     const expiresAt = new Date(Date.now() + ttl * 1000).toISOString();
-    const payload = {
-      intent_id: input.intent.intentId, policy_id: input.intent.policyId, wallet: input.intent.wallet,
-      intent_digest: executionDigest(input.intent), transaction_message_digest: input.intent.transactionMessageDigest,
-      quote_json: input.intent.quoteResponse, intent_json: input.intent, reservation_id: input.reservationId,
-      amount_usd: input.amountUsd, expires_at: expiresAt, status: "pending",
-    };
-    const rows = await this.request<PgApproval[]>("treasury_bound_approvals", {
-      method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify(payload),
+    if (!/^[a-f0-9]{64}$/i.test(input.intent.transactionMessageDigest)
+      || !input.intent.intentId.trim() || !input.intent.policyId.trim() || !input.intent.wallet.trim()) {
+      throw new Error("Invalid transaction binding or incomplete intent");
+    }
+    const rows = await this.request<PgApproval[]>("rpc/treasury_create_bound_approval", {
+      method: "POST",
+      body: JSON.stringify({
+        p_intent_id: input.intent.intentId,
+        p_policy_id: input.intent.policyId,
+        p_wallet: input.intent.wallet,
+        p_intent_digest: executionDigest(input.intent),
+        p_transaction_message_digest: input.intent.transactionMessageDigest,
+        p_quote_json: input.intent.quoteResponse,
+        p_intent_json: input.intent,
+        p_reservation_id: input.reservationId,
+        p_amount_usd: input.amountUsd,
+        p_expires_at: expiresAt,
+      }),
     });
-    if (!rows[0]?.id) throw new Error("Treasury approval insert returned no approval");
-    return rows[0];
+    const row = Array.isArray(rows) ? rows[0] : rows as unknown as PgApproval;
+    if (!row?.id || row.status !== "pending" || row.reservation_id !== input.reservationId) {
+      throw new Error("Treasury approval RPC returned an invalid approval");
+    }
+    return row;
   }
 
   async getApproval(id: string): Promise<PgApproval | null> {
