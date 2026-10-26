@@ -70,3 +70,25 @@ Daily and optional session exposure checks include all active `reserved` and `co
 - The operator object passed to the ledger must be created by trusted authentication middleware. The ledger does not authenticate users itself.
 - The ledger is not yet connected to HTTP endpoints or `build_swap_tx`; it does not sign or broadcast. Do not treat the current public swap endpoint as governed by this ledger.
 - File locks have no automatic stale-lock recovery after an abrupt process kill. If the lock remains, operations fail with a retry-safe busy error rather than ignoring the lock.
+
+
+## PostgreSQL migration (Stage 3, integration pending)
+
+Migration `supabase/migrations/20261026170000_treasury_execution_governance.sql` defines PostgreSQL tables for exposure reservations and transaction-bound approvals, indexes, RLS/service-role restrictions, and two security-definer RPCs:
+
+- `treasury_reserve_exposure`: serializes reservations by wallet using a transaction-scoped advisory lock, enforces daily and session caps, and uses a unique wallet/idempotency key to make retries safe.
+- `treasury_consume_approval`: locks the approval and reservation rows, verifies approval state, expiry, the verified operator ID supplied by trusted server middleware, and the current intent and transaction-message digests, then consumes the approval and commits the reservation in the same database transaction.
+
+The migration is committed as source only; it has **not** been applied to a Supabase project or production database. Runtime database adapter, approval create/decision endpoints, and Jupiter transaction-flow integration are not yet connected. Do not treat these SQL primitives as active runtime controls until a trusted service uses them correctly.
+
+The expired-approval branch deliberately fails closed without trying to update rows before raising an exception, because PostgreSQL rolls back updates in a transaction that raises. Expiry cleanup/release must be performed by a separate sweeper transaction.
+
+### Deployment and integration gates
+
+1. Review/apply migration to a development database first.
+2. Use a server-only Supabase service-role credential; never ship it to browser/client code. Keep RLS enabled and direct table/RPC access revoked from `anon` and `authenticated`.
+3. Implement a server-only database adapter that calls these RPCs and inserts approvals with an exact digest plus the actual decoded transaction message digest.
+4. Authenticate approvers through a real identity provider and derive operator IDs/roles from verified claims, not request JSON.
+5. Decode and inspect the actual Jupiter unsigned transaction: fee payer, required signers, program IDs, swap instructions, mints, amounts, destination and slippage must match the persisted intent before approval and again before handoff.
+6. Add a sweeper for expired pending approvals and reserved exposure, and a chain reconciler for committed reservations. Keep signing/broadcast disabled.
+7. Run typecheck, lint, unit tests, integration tests against disposable Postgres, and transaction-tampering/concurrency tests before enabling the guarded unsigned-transaction endpoint.
