@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { getTransactionDecoder } from "@solana/kit";
 export interface BoundExecutionIntent {
   intentId: string;
   policyId: string;
@@ -26,10 +27,30 @@ export interface BoundApproval {
 }
 
 function canonical(value: unknown): string {
-  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (value === null || typeof value === "string" || typeof value === "boolean") return JSON.stringify(value);
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) throw new Error("Execution intent contains a non-finite number");
+    return JSON.stringify(value);
+  }
+  if (value === undefined || typeof value === "bigint" || typeof value === "function" || typeof value === "symbol") {
+    throw new Error("Execution intent contains a non-JSON value");
+  }
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
   const record = value as Record<string, unknown>;
   return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${canonical(record[key])}`).join(",")}}`;
+}
+
+export function transactionMessageDigest(unsignedTransactionBase64: string): string {
+  try {
+    const bytes = Buffer.from(unsignedTransactionBase64, "base64");
+    if (bytes.toString("base64").replace(/=+$/, "") !== unsignedTransactionBase64.replace(/=+$/, "")) {
+      throw new Error("invalid base64");
+    }
+    const decoded = getTransactionDecoder().decode(bytes);
+    return createHash("sha256").update(decoded.messageBytes).digest("hex");
+  } catch {
+    throw new Error("Unable to decode unsigned Solana transaction message");
+  }
 }
 
 export function executionDigest(intent: BoundExecutionIntent): string {
