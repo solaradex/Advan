@@ -2,8 +2,25 @@
   "name": "advan-mcp",
   "version": "0.1.0",
   "description": "Advan — non-custodial Solana trading tools for AI agents (MCP and HTTP).",
+  "mcpName": "io.github.solaradex/advan",
   "type": "module",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/solaradex/Advan.git"
+  },
+  "homepage": "https://github.com/solaradex/Advan",
+  "bugs": {
+    "url": "https://github.com/solaradex/Advan/issues"
+  },
+  "keywords": [
+    "mcp",
+    "solana",
+    "jupiter",
+    "x402",
+    "ai-agents",
+    "trading"
+  ],
   "engines": {
     "node": ">=20"
   },

@@ -1,0 +1,44 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.solaradex/advan",
+  "title": "Advan: Solana trading tools",
+  "description": "Non-custodial Solana trading MCP: Jupiter quotes/swaps, token risk, portfolio. x402-paid.",
+  "version": "0.1.0",
+  "repository": {
+    "url": "https://github.com/solaradex/Advan",
+    "source": "github"
+  },
+  "websiteUrl": "https://github.com/solaradex/Advan",
+  "packages": [
+    {
+      "registryType": "npm",
+      "registryBaseUrl": "https://registry.npmjs.org",
+      "identifier": "advan-mcp",
+      "version": "0.1.0",
+      "runtimeHint": "npx",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "SOLANA_RPC_URL",
+          "description": "Solana RPC endpoint (mainnet)",
+          "isRequired": true,
+          "isSecret": true
+        },
+        {
+          "name": "JUPITER_API_KEY",
+          "description": "Jupiter API key (optional, raises rate limits)",
+          "isRequired": false,
+          "isSecret": true
+        }
+      ]
+    }
+  ],
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://advan.fly.dev/mcp"
+    }
+  ]
+}

@@ -1,0 +1,49 @@
+# Change `app` if "advan" is already taken on Fly.io.
+# If you rename it, also update the placeholder URL in README.md and server.json.
+app = "advan"
+primary_region = "iad"
+
+[build]
+
+# Non-secret production config. Names match src/config.ts.
+# Secrets (SOLANA_RPC_URL, X402_RPC_URL, JUPITER_API_KEY, CDP_API_KEY_ID,
+# CDP_API_KEY_SECRET) are set with `fly secrets set`. See docs/DEPLOY-FLY.md.
+[env]
+  HOST = "0.0.0.0"
+  # src/config.ts defaults PORT to 8787. internal_port below must stay in sync.
+  PORT = "8787"
+  USAGE_LOG_PATH = "/data/usage.jsonl"
+  X402_NETWORK = "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp"
+  JUPITER_REFERRAL_FEE_BPS = "100"
+  X402_PRICE_USD = "0.02"
+  X402_PAY_TO = "2q4EwekHtit3BtzL25NmGbWJ5khPkmypYbba2t3A4XtM"
+  JUPITER_REFERRAL_ACCOUNT = "ATM2jhwQNPa4kWQ3EfSKxmtPwhWCFag2y1Vgu1BgjA3j"
+  JUPITER_REFERRAL_TOKEN_ACCOUNT_SOL = "BjmGPtkMy8E1C7LDCJ5KPiLh8RRwokCXbW6f1DHqJDaV"
+  JUPITER_REFERRAL_TOKEN_ACCOUNT_USDC = "6vLiBn4jWUfhzqnbj4WmzksUHKHRYdQcDLAiYQBEYbsN"
+  JUPITER_REFERRAL_TOKEN_ACCOUNT_USDT = "9eM5odqFY3xte4z5CYW2nrwZh2fr3psRBXWWmrqQMJN9"
+  JUPITER_REFERRAL_REQUIRED = "true"
+  X402_REQUIRED = "true"
+  X402_PRICE_GUARD = "refuse"
+
+[http_service]
+  internal_port = 8787
+  force_https = true
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  # Boot probes the x402 facilitator before listen (timeout default 90s).
+  [[http_service.checks]]
+    grace_period = "120s"
+    interval = "30s"
+    timeout = "5s"
+    method = "GET"
+    path = "/healthz"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
+
+[mounts]
+  source = "advan_data"
+  destination = "/data"
