@@ -1,3 +1,5 @@
+import { appendFileSync, mkdirSync } from "node:fs";
+import { dirname } from "node:path";
 import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
 import { hostHeaderValidation } from "@modelcontextprotocol/sdk/server/middleware/hostHeaderValidation.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -15,6 +17,7 @@ import { walletPortfolio } from "../tools/portfolio.js";
 import { tokenRisk } from "../tools/tokenRisk.js";
 import { SERVICE_NAME, VERSION } from "../version.js";
 import { createMcpServer } from "../mcp/server.js";
+import { evaluateTreasuryIntent, type TreasuryIntent, type TreasuryPolicy } from "../treasury/policy.js";
 import { httpDiscovery, type X402Runtime } from "../x402/setup.js";
 
 export interface AppOptions {
@@ -140,6 +143,7 @@ export function createApp(options: AppOptions): Express {
         tokenRisk: "POST /v1/token_risk",
         portfolio: "POST /v1/wallet_portfolio",
         mcp: "POST /mcp",
+        treasuryEvaluate: "POST /v1/treasury/evaluate (evaluation only)",
       },
     });
   });
@@ -182,6 +186,37 @@ export function createApp(options: AppOptions): Express {
       return;
     }
     res.json(summarizeUsage(readUsageEvents(ctx.config.usageLogPath)));
+  });
+
+  app.post("/v1/treasury/evaluate", (req, res, next) => {
+    try {
+      if (!req.body || typeof req.body !== "object" || !req.body.policy || !req.body.intent) {
+        res.status(400).json({ error: "Body must contain policy and intent objects", code: "invalid_treasury_request" });
+        return;
+      }
+      const evaluation = evaluateTreasuryIntent(req.body.policy as TreasuryPolicy, req.body.intent as TreasuryIntent);
+      const event = {
+        kind: "treasury_evaluation",
+        timestamp: evaluation.evaluatedAt,
+        intent: req.body.intent,
+        policyId: evaluation.policyId,
+        decision: evaluation.decision,
+        checks: evaluation.checks,
+        riskScore: evaluation.riskScore,
+      };
+      if (ctx.config.usageLogPath !== "stdout") {
+        const auditPath = `${ctx.config.usageLogPath}.treasury.jsonl`;
+        mkdirSync(dirname(auditPath), { recursive: true });
+        appendFileSync(auditPath, `${JSON.stringify(event)}\\n`, { mode: 0o600 });
+      }
+      res.status(200).json(evaluation);
+    } catch (error) {
+      if (error instanceof Error && /invalid|must be|contains/.test(error.message)) {
+        res.status(400).json({ error: error.message, code: "invalid_treasury_request" });
+        return;
+      }
+      next(error);
+    }
   });
 
   app.post("/v1/get_quote", async (req, res, next) => {
