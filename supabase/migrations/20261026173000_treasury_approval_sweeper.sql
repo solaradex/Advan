@@ -30,9 +30,6 @@ begin
     update public.treasury_exposure_reservations set status='released', updated_at=now()
      where id=v_approval.reservation_id and status='reserved';
   end if;
-  if v_final_status = 'expired' then
-    raise exception 'approval expired' using errcode = '55000';
-  end if;
   return v_approval;
 end;
 $$;
