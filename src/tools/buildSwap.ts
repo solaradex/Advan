@@ -1,5 +1,6 @@
 import { FeeCheckError, GuardError, UpstreamError } from "../errors.js";
 import { assertSwapSigners, inspectUnsignedTransaction, referralAccountInTransaction } from "../solana/unsignedTx.js";
+import { transactionMessageDigest } from "../treasury/executionGuard.js";
 import { presentOrder, submitHint } from "./present.js";
 import { execute } from "./execute.js";
 import { swapSchema } from "./schemas.js";
@@ -45,6 +46,10 @@ export async function buildSwapTx(input: unknown, ctx: ToolContext) {
       taker: parsed.taker,
       selfBroadcast,
       transaction: order.transaction,
+      treasuryBinding: {
+        transactionMessageDigest: transactionMessageDigest(order.transaction),
+        message: "SHA-256 digest of the decoded Solana transaction message. Treasury approvals must bind this exact digest; this field does not authorize, sign, or broadcast the transaction.",
+      },
       signing: {
         status: "unsigned" as const,
         feePayer: inspected.feePayer,

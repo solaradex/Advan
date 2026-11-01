@@ -15,6 +15,9 @@ import { walletPortfolio } from "../tools/portfolio.js";
 import { tokenRisk } from "../tools/tokenRisk.js";
 import { SERVICE_NAME, VERSION } from "../version.js";
 import { createMcpServer } from "../mcp/server.js";
+import { evaluateTreasuryIntent, type TreasuryIntent, type TreasuryPolicy } from "../treasury/policy.js";
+import { TreasuryStore } from "../treasury/store.js";
+import { verifySupabaseTreasuryOperator, type TreasuryOperator } from "../treasury/supabaseAuth.js";
 import { httpDiscovery, type X402Runtime } from "../x402/setup.js";
 
 export interface AppOptions {
@@ -24,6 +27,8 @@ export interface AppOptions {
 
 export function createApp(options: AppOptions): Express {
   const { ctx, x402 } = options;
+  const treasuryStore = new TreasuryStore(process.env.TREASURY_STORE_PATH?.trim() || "./data/treasury.json");
+
   const loopback = isLoopbackHost(ctx.config.host);
   // On a public bind, check hosts ourselves so GET /healthz stays open for Fly's
   // private probe (its Host is the machine address, not advan.fly.dev).
@@ -50,7 +55,7 @@ export function createApp(options: AppOptions): Express {
     if (origin) {
       res.setHeader("Access-Control-Allow-Origin", origin);
       res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
-      res.setHeader("Access-Control-Allow-Headers", "Content-Type, Accept, PAYMENT-SIGNATURE, X-PAYMENT");
+      res.setHeader("Access-Control-Allow-Headers", "Content-Type, Accept, Authorization, PAYMENT-SIGNATURE, X-PAYMENT");
       res.setHeader("Access-Control-Expose-Headers", "PAYMENT-REQUIRED, PAYMENT-RESPONSE");
       if (origin !== "*") res.setHeader("Vary", "Origin");
     }
@@ -140,6 +145,9 @@ export function createApp(options: AppOptions): Express {
         tokenRisk: "POST /v1/token_risk",
         portfolio: "POST /v1/wallet_portfolio",
         mcp: "POST /mcp",
+        treasuryEvaluate: "POST /v1/treasury/evaluate (authenticated, evaluation only)",
+        treasuryPolicies: "PUT/GET /v1/treasury/policies/:id",
+        treasuryApprovals: "GET /v1/treasury/approvals; POST /v1/treasury/approvals/:id/decision",
       },
     });
   });
@@ -182,6 +190,93 @@ export function createApp(options: AppOptions): Express {
       return;
     }
     res.json(summarizeUsage(readUsageEvents(ctx.config.usageLogPath)));
+  });
+
+  const treasuryAuth = (minimumRole: "approver" | "admin" = "approver"): RequestHandler =>
+    async (req, res, next) => {
+      const operator = await verifySupabaseTreasuryOperator({
+        authorization: req.header("authorization"),
+        supabaseUrl: process.env.SUPABASE_URL,
+        anonKey: process.env.SUPABASE_ANON_KEY,
+      });
+      if (!operator) {
+        res.status(process.env.SUPABASE_URL && process.env.SUPABASE_ANON_KEY ? 401 : 503).json({
+          error: process.env.SUPABASE_URL && process.env.SUPABASE_ANON_KEY ? "Valid Supabase treasury operator session required" : "Supabase Treasury authentication is not configured",
+          code: process.env.SUPABASE_URL && process.env.SUPABASE_ANON_KEY ? "unauthorized" : "treasury_unconfigured",
+        });
+        return;
+      }
+      if (!operator.canApprove || (minimumRole === "admin" && operator.role !== "treasury_admin")) {
+        res.status(403).json({ error: "Insufficient treasury permissions", code: "forbidden" });
+        return;
+      }
+      res.locals.treasuryOperator = operator satisfies TreasuryOperator;
+      next();
+    };
+
+  app.put("/v1/treasury/policies/:id", treasuryAuth("admin"), (req, res) => {
+    try {
+      const policy = req.body as TreasuryPolicy;
+      if (!policy || typeof policy !== "object" || policy.id !== req.params.id || typeof policy.wallet !== "string") {
+        res.status(400).json({ error: "Policy id must match URL and wallet is required", code: "invalid_policy" });
+        return;
+      }
+      // Validate thresholds and fields by evaluating a deliberately safe, zero-value intent.
+      evaluateTreasuryIntent(policy, { agentId: "policy-validation", wallet: policy.wallet, inputMint: "validation", outputMint: "validation", amountUsd: 0, slippageBps: 0, priceImpactPct: 0, tokenRiskScore: 0, routeRiskScore: 0, protocolRiskScore: 0, dailyExposureUsd: 0, sessionExposureUsd: 0 });
+      treasuryStore.putPolicy(policy);
+      treasuryStore.appendAudit({ kind: "policy_upsert", policyId: policy.id, timestamp: new Date().toISOString() });
+      res.status(200).json({ saved: true, policyId: policy.id });
+    } catch (error) {
+      res.status(400).json({ error: error instanceof Error ? error.message : "Invalid policy", code: "invalid_policy" });
+    }
+  });
+
+  app.get("/v1/treasury/policies/:id", treasuryAuth("admin"), (req, res) => {
+    const policy = treasuryStore.getPolicy(req.params.id);
+    if (!policy) { res.status(404).json({ error: "Policy not found", code: "policy_not_found" }); return; }
+    res.json(policy);
+  });
+
+  app.get("/v1/treasury/approvals", treasuryAuth("approver"), (req, res) => {
+    res.json({ approvals: treasuryStore.listApprovals() });
+  });
+
+  app.post("/v1/treasury/approvals/:id/decision", treasuryAuth("approver"), (req, res) => {
+    const { status, reason } = req.body ?? {};
+    const operator = res.locals.treasuryOperator as TreasuryOperator;
+    if (!["approved", "rejected"].includes(status)) {
+      res.status(400).json({ error: "status is required", code: "invalid_approval" }); return;
+    }
+    try {
+      const approval = treasuryStore.decideApproval(req.params.id, status, operator.id, typeof reason === "string" ? reason : undefined);
+      treasuryStore.appendAudit({ kind: "approval_decision", ...approval });
+      res.json(approval);
+    } catch (error) {
+      res.status(409).json({ error: error instanceof Error ? error.message : "Approval conflict", code: "approval_conflict" });
+    }
+  });
+
+  app.post("/v1/treasury/evaluate", treasuryAuth("admin"), (req, res) => {
+    try {
+      const { policyId, intent } = req.body ?? {};
+      if (typeof policyId !== "string" || !intent || typeof intent !== "object") {
+        res.status(400).json({ error: "Body must contain policyId and intent", code: "invalid_treasury_request" }); return;
+      }
+      const policy = treasuryStore.getPolicy(policyId);
+      if (!policy) { res.status(404).json({ error: "Policy not found", code: "policy_not_found" }); return; }
+      const evaluation = evaluateTreasuryIntent(policy, intent as TreasuryIntent);
+      const event = { kind: "treasury_evaluation", intent, ...evaluation, policyId };
+      treasuryStore.appendAudit(event);
+      if (evaluation.decision === "approval_required") {
+        const approval = treasuryStore.createApproval(evaluation.intentId, policyId);
+        treasuryStore.appendAudit({ kind: "approval_requested", ...approval });
+        res.status(202).json({ ...evaluation, approval });
+        return;
+      }
+      res.json(evaluation);
+    } catch (error) {
+      res.status(400).json({ error: error instanceof Error ? error.message : "Invalid treasury request", code: "invalid_treasury_request" });
+    }
   });
 
   app.post("/v1/get_quote", async (req, res, next) => {

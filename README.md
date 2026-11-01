@@ -171,6 +171,7 @@ Cursor `.cursor/mcp.json` uses the same `mcpServers` object. During development 
 | POST | `/v1/build_swap_tx` | quote fields plus `taker`, optional `selfBroadcast`, optional `receiver` |
 | POST | `/v1/token_risk` | `{ "mint" }` |
 | POST | `/v1/wallet_portfolio` | `{ "owner" }` |
+| POST | `/v1/treasury/evaluate` | `{ "policy": {...}, "intent": {...} }` — deterministic policy evaluation; never signs or broadcasts |
 | POST | `/mcp` | Streamable HTTP MCP (stateless JSON responses) |
 
 `amount` is an integer string in base units. Addresses are base58. `slippageBps` is an integer 0–10000, then capped by `MAX_SLIPPAGE_BPS`.
@@ -263,3 +264,21 @@ These are configuration, not hardcoded wallets:
 - **Self-broadcast default** is off so JupiterZ can compete. Turn `SWAP_SELF_BROADCAST_DEFAULT` on if every client broadcasts its own transaction.
 - **`FEE_CHECK_MODE`** defaults to `fail`. Use `warn` only if you would rather return a transaction whose integrator fee did not stick.
 - **`X402_PRICE_GUARD`** defaults to `warn`. Set `refuse` in production if a too-low price should stop the process.
+
+
+## Advan Treasury (MVP policy evaluator)
+
+The first Treasury slice adds `POST /v1/treasury/evaluate` and `src/treasury/policy.ts`. It evaluates wallet/agent permissions, asset allow/deny lists, per-trade and projected daily/session exposure, slippage, price impact, and a weighted risk score, returning `allow`, `approval_required`, or `deny` with individual checks. Each evaluation is appended to `${USAGE_LOG_PATH}.treasury.jsonl` when file logging is configured. See [docs/TREASURY-MVP.md](docs/TREASURY-MVP.md) for the request schema and rollout limitations.
+
+**Important:** this is an evaluation-only foundation, not yet a production authorization boundary. Policies and risk inputs are submitted by the caller, there is no authentication or durable exposure reservation, and the result does not authorize signing/broadcasting. Do not expose the endpoint publicly or enable automatic execution until trusted policy storage, authentication, authoritative risk inputs, atomic exposure accounting, and approval identity are implemented. Existing swap tools remain non-custodial and unchanged.
+
+## Advan Treasury governance endpoints
+
+Treasury governance routes are disabled unless `TREASURY_API_TOKEN` is configured. Configure a long random bearer secret and optionally `TREASURY_STORE_PATH` (default `./data/treasury.json`) before using them. All Treasury endpoints require `Authorization: Bearer <token>`.
+
+- `PUT /v1/treasury/policies/:id` and `GET /v1/treasury/policies/:id` manage/read trusted policy records.
+- `POST /v1/treasury/evaluate` accepts `{"policyId":"...","intent":{...}}` and evaluates against the stored policy.
+- `GET /v1/treasury/approvals` lists pending and decided approval records.
+- `POST /v1/treasury/approvals/:id/decision` records an approval or rejection.
+
+See [docs/TREASURY-MVP.md](docs/TREASURY-MVP.md) for details. The current JSON file store is single-process only; approvals are governance records and do not trigger swaps. This is not yet a multi-replica production treasury: identity verification, atomic exposure reservations, trusted on-chain risk inputs, immutable quote binding, and execution reconciliation remain required.
