@@ -47,7 +47,7 @@ export function transactionMessageDigest(unsignedTransactionBase64: string): str
       throw new Error("invalid base64");
     }
     const decoded = getTransactionDecoder().decode(bytes);
-    return createHash("sha256").update(decoded.messageBytes).digest("hex");
+    return createHash("sha256").update(Buffer.from(decoded.messageBytes as unknown as Uint8Array)).digest("hex");
   } catch {
     throw new Error("Unable to decode unsigned Solana transaction message");
   }

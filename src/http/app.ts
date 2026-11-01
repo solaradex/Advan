@@ -265,7 +265,7 @@ export function createApp(options: AppOptions): Express {
       const policy = treasuryStore.getPolicy(policyId);
       if (!policy) { res.status(404).json({ error: "Policy not found", code: "policy_not_found" }); return; }
       const evaluation = evaluateTreasuryIntent(policy, intent as TreasuryIntent);
-      const event = { kind: "treasury_evaluation", intent, policyId, ...evaluation };
+      const event = { kind: "treasury_evaluation", intent, ...evaluation, policyId };
       treasuryStore.appendAudit(event);
       if (evaluation.decision === "approval_required") {
         const approval = treasuryStore.createApproval(evaluation.intentId, policyId);
