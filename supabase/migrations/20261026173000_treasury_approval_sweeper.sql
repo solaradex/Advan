@@ -34,30 +34,42 @@ begin
 end;
 $$;
 
--- Batch sweeper: update rows without raising, so expiry and release commit together.
+-- Batch sweeper: return the number of approvals expired, not the number of
+-- reservations released (which can differ if a reservation was already changed).
 create or replace function public.treasury_expire_pending(p_batch_size integer default 200)
 returns integer
 language plpgsql security definer set search_path = public, pg_temp
 as $$
-declare v_count integer;
+declare
+  v_count integer;
+  v_reservation_ids uuid[];
 begin
   if p_batch_size < 1 or p_batch_size > 2000 then
     raise exception 'invalid batch size' using errcode = '22023';
   end if;
+
   with expired as (
-    select id, reservation_id from public.treasury_bound_approvals
+    select id
+      from public.treasury_bound_approvals
      where status='pending' and expires_at <= now()
      order by expires_at
-     for update skip locked limit p_batch_size
+     for update skip locked
+     limit p_batch_size
   ), changed as (
     update public.treasury_bound_approvals a
        set status='expired', decision_reason='expired'
-      from expired e where a.id=e.id returning a.reservation_id
+      from expired e
+     where a.id=e.id
+     returning a.reservation_id
   )
-  update public.treasury_exposure_reservations r
+  select count(*)::integer, coalesce(array_agg(reservation_id), '{}'::uuid[])
+    into v_count, v_reservation_ids
+    from changed;
+
+  update public.treasury_exposure_reservations
      set status='released', updated_at=now()
-    where r.id in (select reservation_id from changed) and r.status='reserved';
-  get diagnostics v_count = row_count;
+   where id = any(v_reservation_ids) and status='reserved';
+
   return v_count;
 end;
 $$;
