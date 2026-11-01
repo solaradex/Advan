@@ -16,7 +16,8 @@ import { tokenRisk } from "../tools/tokenRisk.js";
 import { SERVICE_NAME, VERSION } from "../version.js";
 import { createMcpServer } from "../mcp/server.js";
 import { evaluateTreasuryIntent, type TreasuryIntent, type TreasuryPolicy } from "../treasury/policy.js";
-import { bearerAuthorized, TreasuryStore } from "../treasury/store.js";
+import { TreasuryStore } from "../treasury/store.js";
+import { verifySupabaseTreasuryOperator, type TreasuryOperator } from "../treasury/supabaseAuth.js";
 import { httpDiscovery, type X402Runtime } from "../x402/setup.js";
 
 export interface AppOptions {
@@ -27,7 +28,7 @@ export interface AppOptions {
 export function createApp(options: AppOptions): Express {
   const { ctx, x402 } = options;
   const treasuryStore = new TreasuryStore(process.env.TREASURY_STORE_PATH?.trim() || "./data/treasury.json");
-  const treasuryToken = process.env.TREASURY_API_TOKEN;
+
   const loopback = isLoopbackHost(ctx.config.host);
   // On a public bind, check hosts ourselves so GET /healthz stays open for Fly's
   // private probe (its Host is the machine address, not advan.fly.dev).
@@ -54,7 +55,7 @@ export function createApp(options: AppOptions): Express {
     if (origin) {
       res.setHeader("Access-Control-Allow-Origin", origin);
       res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
-      res.setHeader("Access-Control-Allow-Headers", "Content-Type, Accept, PAYMENT-SIGNATURE, X-PAYMENT");
+      res.setHeader("Access-Control-Allow-Headers", "Content-Type, Accept, Authorization, PAYMENT-SIGNATURE, X-PAYMENT");
       res.setHeader("Access-Control-Expose-Headers", "PAYMENT-REQUIRED, PAYMENT-RESPONSE");
       if (origin !== "*") res.setHeader("Vary", "Origin");
     }
@@ -191,13 +192,27 @@ export function createApp(options: AppOptions): Express {
     res.json(summarizeUsage(readUsageEvents(ctx.config.usageLogPath)));
   });
 
-  const treasuryAuth = (req: Request, res: Response): boolean => {
-    if (!bearerAuthorized(req.header("authorization"), treasuryToken)) {
-      res.status(treasuryToken ? 401 : 503).json({ error: treasuryToken ? "Unauthorized" : "Treasury API is not configured", code: treasuryToken ? "unauthorized" : "treasury_unconfigured" });
-      return false;
-    }
-    return true;
-  };
+  const treasuryAuth = (minimumRole: "approver" | "admin" = "approver"): RequestHandler =>
+    async (req, res, next) => {
+      const operator = await verifySupabaseTreasuryOperator({
+        authorization: req.header("authorization"),
+        supabaseUrl: process.env.SUPABASE_URL,
+        anonKey: process.env.SUPABASE_ANON_KEY,
+      });
+      if (!operator) {
+        res.status(process.env.SUPABASE_URL && process.env.SUPABASE_ANON_KEY ? 401 : 503).json({
+          error: process.env.SUPABASE_URL && process.env.SUPABASE_ANON_KEY ? "Valid Supabase treasury operator session required" : "Supabase Treasury authentication is not configured",
+          code: process.env.SUPABASE_URL && process.env.SUPABASE_ANON_KEY ? "unauthorized" : "treasury_unconfigured",
+        });
+        return;
+      }
+      if (!operator.canApprove || (minimumRole === "admin" && operator.role !== "treasury_admin")) {
+        res.status(403).json({ error: "Insufficient treasury permissions", code: "forbidden" });
+        return;
+      }
+      res.locals.treasuryOperator = operator satisfies TreasuryOperator;
+      next();
+    };
 
   app.put("/v1/treasury/policies/:id", (req, res) => {
     if (!treasuryAuth(req, res)) return;
@@ -236,7 +251,7 @@ export function createApp(options: AppOptions): Express {
       res.status(400).json({ error: "status and decidedBy are required", code: "invalid_approval" }); return;
     }
     try {
-      const approval = treasuryStore.decideApproval(req.params.id, status, decidedBy, typeof reason === "string" ? reason : undefined);
+      const approval = treasuryStore.decideApproval(req.params.id, status, operator.id, typeof reason === "string" ? reason : undefined);
       treasuryStore.appendAudit({ kind: "approval_decision", ...approval });
       res.json(approval);
     } catch (error) {
