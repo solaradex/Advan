@@ -214,8 +214,7 @@ export function createApp(options: AppOptions): Express {
       next();
     };
 
-  app.put("/v1/treasury/policies/:id", (req, res) => {
-    if (!treasuryAuth(req, res)) return;
+  app.put("/v1/treasury/policies/:id", treasuryAuth("admin"), (req, res) => {
     try {
       const policy = req.body as TreasuryPolicy;
       if (!policy || typeof policy !== "object" || policy.id !== req.params.id || typeof policy.wallet !== "string") {
@@ -232,23 +231,21 @@ export function createApp(options: AppOptions): Express {
     }
   });
 
-  app.get("/v1/treasury/policies/:id", (req, res) => {
-    if (!treasuryAuth(req, res)) return;
+  app.get("/v1/treasury/policies/:id", treasuryAuth("admin"), (req, res) => {
     const policy = treasuryStore.getPolicy(req.params.id);
     if (!policy) { res.status(404).json({ error: "Policy not found", code: "policy_not_found" }); return; }
     res.json(policy);
   });
 
-  app.get("/v1/treasury/approvals", (req, res) => {
-    if (!treasuryAuth(req, res)) return;
+  app.get("/v1/treasury/approvals", treasuryAuth("approver"), (req, res) => {
     res.json({ approvals: treasuryStore.listApprovals() });
   });
 
-  app.post("/v1/treasury/approvals/:id/decision", (req, res) => {
-    if (!treasuryAuth(req, res)) return;
-    const { status, decidedBy, reason } = req.body ?? {};
-    if (!["approved", "rejected"].includes(status) || typeof decidedBy !== "string" || !decidedBy.trim()) {
-      res.status(400).json({ error: "status and decidedBy are required", code: "invalid_approval" }); return;
+  app.post("/v1/treasury/approvals/:id/decision", treasuryAuth("approver"), (req, res) => {
+    const { status, reason } = req.body ?? {};
+    const operator = res.locals.treasuryOperator as TreasuryOperator;
+    if (!["approved", "rejected"].includes(status)) {
+      res.status(400).json({ error: "status is required", code: "invalid_approval" }); return;
     }
     try {
       const approval = treasuryStore.decideApproval(req.params.id, status, operator.id, typeof reason === "string" ? reason : undefined);
@@ -259,8 +256,7 @@ export function createApp(options: AppOptions): Express {
     }
   });
 
-  app.post("/v1/treasury/evaluate", (req, res) => {
-    if (!treasuryAuth(req, res)) return;
+  app.post("/v1/treasury/evaluate", treasuryAuth("admin"), (req, res) => {
     try {
       const { policyId, intent } = req.body ?? {};
       if (typeof policyId !== "string" || !intent || typeof intent !== "object") {
