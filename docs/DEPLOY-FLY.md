@@ -67,6 +67,16 @@ Do not import a development `.env`. That file sets `HOST=127.0.0.1` and a relati
 
 `fly secrets set` restarts existing machines. On a brand-new app, set the secrets before `fly deploy`.
 
+Treasury operator routes require Supabase Auth. Set these two values from the **Advan Treasury** Supabase project (Project URL and publishable/anon key). The server calls Supabase Auth's `/auth/v1/user` endpoint to validate each bearer token and reads only trusted `app_metadata.treasury_role`. Never set the service-role key as a browser/public variable. It is not needed for this identity check.
+
+```bash
+fly secrets set \
+  SUPABASE_URL="https://YOUR_PROJECT_REF.supabase.co" \
+  SUPABASE_ANON_KEY="YOUR_SUPABASE_PUBLISHABLE_OR_ANON_KEY"
+```
+
+Assign `treasury_admin` or `treasury_approver` only through trusted Supabase App Metadata. Admin is required for policy management and treasury evaluation; approver/admin can review and decide approvals. The decision actor is taken from the verified Supabase user ID, never from the request body. Without these settings, treasury routes fail closed.
+
 ## 5. Deploy
 
 ```bash
